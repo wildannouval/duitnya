@@ -5,47 +5,46 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { SiteHeader } from "@/components/site-header";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
 import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from "@/components/ui/select";
+import { QuickCreate } from "@/components/quick-create";
+
+type Tx = {
+  id: string;
+  type: "INCOME" | "EXPENSE" | "TRANSFER";
+  amount: number;
+  date: string;
+  note?: string | null;
+  accountId?: string | null;
+  categoryId?: string | null;
+  fromAccountId?: string | null;
+  toAccountId?: string | null;
+  transferGroupId?: string | null;
+};
 
 type Account = { id: string; name: string };
 type Category = { id: string; name: string; type: "INCOME" | "EXPENSE" };
 
-type TxType = "INCOME" | "EXPENSE" | "TRANSFER";
-type TxRow = {
-  id: string;
-  type: TxType;
-  amount: number;
-  date: string;
-  note?: string | null;
-  account?: Account | null;
-  fromAccount?: Account | null;
-  toAccount?: Account | null;
-  category?: Category | null;
-  transferGroupId?: string | null;
-};
+const ALL = "__all__"; // sentinel utk "Semua …"
 
 export default function TransactionsPage() {
+  const now = new Date();
+  const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+
+  const [month, setMonth] = React.useState(thisMonth);
+  const [type, setType] = React.useState<"ALL" | "INCOME" | "EXPENSE" | "TRANSFER">("ALL");
+  const [accountId, setAccountId] = React.useState<string>(ALL);
+  const [categoryId, setCategoryId] = React.useState<string>(ALL);
+
+  const [txs, setTxs] = React.useState<Tx[]>([]);
   const [accounts, setAccounts] = React.useState<Account[]>([]);
   const [categories, setCategories] = React.useState<Category[]>([]);
-  const [txs, setTxs] = React.useState<TxRow[]>([]);
   const [loading, setLoading] = React.useState(true);
-  const [submitting, setSubmitting] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-
-  // form
-  const [type, setType] = React.useState<TxType>("EXPENSE");
-  const [accountId, setAccountId] = React.useState("");
-  const [fromAccountId, setFromAccountId] = React.useState("");
-  const [toAccountId, setToAccountId] = React.useState("");
-  const [categoryId, setCategoryId] = React.useState("");
-  const [amount, setAmount] = React.useState("0");
-  const [date, setDate] = React.useState<string>(() => new Date().toISOString().slice(0, 10));
-  const [note, setNote] = React.useState("");
+  const [openQC, setOpenQC] = React.useState(false);
 
   const fmt = (n: number) =>
     new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(n);
@@ -53,94 +52,49 @@ export default function TransactionsPage() {
   async function loadAll() {
     setLoading(true);
     try {
-      const [accRes, catRes, txRes] = await Promise.all([
-        fetch("/api/accounts", { cache: "no-store" }),
-        fetch("/api/categories", { cache: "no-store" }),
-        fetch("/api/transactions", { cache: "no-store" }),
+      const qs = new URLSearchParams();
+      if (month) qs.set("month", month);
+      if (type !== "ALL") qs.set("type", type);
+      if (accountId !== ALL) qs.set("accountId", accountId);
+      if (categoryId !== ALL) qs.set("categoryId", categoryId);
+
+      const [tRes, aRes, cRes] = await Promise.all([
+        fetch(`/api/transactions?${qs.toString()}`, { cache: "no-store" }),
+        fetch(`/api/accounts`, { cache: "no-store" }),
+        fetch(`/api/categories`, { cache: "no-store" }),
       ]);
-      const [acc, cat, tx] = await Promise.all([accRes.json(), catRes.json(), txRes.json()]);
-      setAccounts(acc);
-      setCategories(cat);
-      setTxs(tx);
-    } catch {
-      setError("Gagal memuat data.");
+      const [t, a, c] = await Promise.all([tRes.json(), aRes.json(), cRes.json()]);
+      setTxs(t);
+      setAccounts(a);
+      setCategories(c);
     } finally {
       setLoading(false);
     }
   }
 
-  React.useEffect(() => { loadAll(); }, []);
-
-  const filteredCats = categories.filter((c) =>
-    type === "INCOME" ? c.type === "INCOME" : type === "EXPENSE" ? c.type === "EXPENSE" : true
-  );
-
-  async function onAdd(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    const amt = Number(amount.replace(/[^\d-]/g, ""));
-    if (!Number.isFinite(amt) || amt <= 0) return setError("Nominal harus > 0.");
-
-    setSubmitting(true);
-    try {
-      let payload: any = { type, amount: amt, date, note: note.trim() || undefined };
-
-      if (type === "TRANSFER") {
-        if (!fromAccountId || !toAccountId || fromAccountId === toAccountId) {
-          setSubmitting(false);
-          return setError("Pilih akun berbeda untuk transfer.");
-        }
-        payload.fromAccountId = fromAccountId;
-        payload.toAccountId = toAccountId;
-      } else {
-        if (!accountId) {
-          setSubmitting(false);
-          return setError("Pilih akun.");
-        }
-        payload.accountId = accountId;
-        if (categoryId) payload.categoryId = categoryId;
-      }
-
-      const res = await fetch("/api/transactions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const created = await res.json();
-      if (!res.ok) return setError(created?.error ?? "Gagal menyimpan transaksi.");
-
-      // created bisa 1 objek (income/expense) atau array 2 objek (transfer)
-      const createdRows = Array.isArray(created) ? created : [created];
-      setTxs((prev) => [...createdRows, ...prev]);
-
-      // reset form
-      setType("EXPENSE");
-      setAccountId(""); setFromAccountId(""); setToAccountId("");
-      setCategoryId(""); setAmount("0"); setNote("");
-      setDate(new Date().toISOString().slice(0, 10));
-    } catch {
-      setError("Gagal menyimpan transaksi.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
+  React.useEffect(() => { loadAll(); /* eslint-disable-line */ }, [month, type, accountId, categoryId]);
 
   async function onDelete(id: string) {
-    const ok = confirm("Hapus transaksi ini? (Jika transfer, kedua baris akan terhapus)");
+    const ok = confirm("Hapus transaksi ini? (Jika transfer, pasangan akan ikut terhapus)");
     if (!ok) return;
-    try {
-      const res = await fetch(`/api/transactions/${id}`, { method: "DELETE" });
-      if (!res.ok) {
-        const j = await res.json();
-        alert(j?.error ?? "Gagal menghapus");
-        return;
-      }
-      // refresh list dari server (biar aman utk kasus transfer)
-      await loadAll();
-    } catch {
-      alert("Gagal menghapus");
+    const res = await fetch(`/api/transactions/${id}`, { method: "DELETE" });
+    const j = await res.json();
+    if (!res.ok) {
+      alert(j?.error ?? "Gagal menghapus.");
+      return;
     }
+    loadAll();
   }
+
+  const exportHref = React.useMemo(() => {
+  const qs = new URLSearchParams();
+  if (month) qs.set("month", month);
+  if (type !== "ALL") qs.set("type", type);
+  if (accountId !== "__all__") qs.set("accountId", accountId);
+  if (categoryId !== "__all__") qs.set("categoryId", categoryId);
+  return `/api/exports/transactions?${qs.toString()}`;
+}, [month, type, accountId, categoryId]);
+
 
   return (
     <SidebarProvider style={{ "--sidebar-width": "calc(var(--spacing) * 72)", "--header-height": "calc(var(--spacing) * 12)" } as React.CSSProperties}>
@@ -150,114 +104,64 @@ export default function TransactionsPage() {
         <div className="flex flex-1 flex-col @container/main">
           <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
 
-            {/* FORM */}
-            <div className="grid gap-4 px-4 lg:grid-cols-3 lg:px-6">
-              <Card className="lg:col-span-2">
-                <CardHeader><CardTitle>Tambah Transaksi</CardTitle></CardHeader>
-                <CardContent>
-                  <form onSubmit={onAdd} className="grid gap-4">
-                    <div className="grid gap-2">
-                      <Label>Jenis</Label>
-                      <Select value={type} onValueChange={(v) => setType(v as TxType)}>
-                        <SelectTrigger><SelectValue placeholder="Pilih jenis" /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="INCOME">INCOME</SelectItem>
-                          <SelectItem value="EXPENSE">EXPENSE</SelectItem>
-                          <SelectItem value="TRANSFER">TRANSFER</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
+            {/* Header + filters */}
+            <div className="px-4 lg:px-6 flex items-end justify-between gap-3">
+              <div>
+                <h1 className="text-xl font-semibold">Transaksi</h1>
+                <p className="text-sm text-muted-foreground">Lihat & kelola transaksi per bulan.</p>
+              </div>
+              <div className="flex gap-2">
+  <Button asChild variant="outline">
+    <a href={exportHref} target="_blank" rel="noopener noreferrer">Export CSV</a>
+  </Button>
+  <Button onClick={() => setOpenQC(true)}>Quick Create</Button>
+</div>
 
-                    {type !== "TRANSFER" ? (
-                      <>
-                        <div className="grid gap-2">
-                          <Label>Akun</Label>
-                          <Select value={accountId} onValueChange={setAccountId}>
-                            <SelectTrigger><SelectValue placeholder="Pilih akun" /></SelectTrigger>
-                            <SelectContent>
-                              {accounts.map((a) => (
-                                <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-
-                        <div className="grid gap-2">
-                          <Label>Kategori (opsional)</Label>
-                          <Select value={categoryId} onValueChange={setCategoryId}>
-                            <SelectTrigger><SelectValue placeholder="Pilih kategori" /></SelectTrigger>
-                            <SelectContent>
-                              {filteredCats.map((c) => (
-                                <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="grid gap-2">
-                          <Label>Dari Akun</Label>
-                          <Select value={fromAccountId} onValueChange={setFromAccountId}>
-                            <SelectTrigger><SelectValue placeholder="Pilih akun sumber" /></SelectTrigger>
-                            <SelectContent>
-                              {accounts.map((a) => (
-                                <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="grid gap-2">
-                          <Label>Ke Akun</Label>
-                          <Select value={toAccountId} onValueChange={setToAccountId}>
-                            <SelectTrigger><SelectValue placeholder="Pilih akun tujuan" /></SelectTrigger>
-                            <SelectContent>
-                              {accounts.map((a) => (
-                                <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      </>
-                    )}
-
-                    <div className="grid gap-2">
-                      <Label>Nominal (Rp)</Label>
-                      <Input inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value)} />
-                    </div>
-
-                    <div className="grid gap-2">
-                      <Label>Tanggal</Label>
-                      <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-                    </div>
-
-                    <div className="grid gap-2">
-                      <Label>Catatan (opsional)</Label>
-                      <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="mis. makan siang" />
-                    </div>
-
-                    {error && <p className="text-sm text-red-600">{error}</p>}
-
-                    <Button type="submit" disabled={submitting}>
-                      {submitting ? "Menyimpan..." : "Simpan"}
-                    </Button>
-                  </form>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader><CardTitle>Info</CardTitle></CardHeader>
-                <CardContent className="text-sm text-muted-foreground space-y-2">
-                  <p>INCOME disimpan positif, EXPENSE negatif.</p>
-                  <p>TRANSFER membuat 2 baris (+ dan -) dengan <code>transferGroupId</code> yang sama.</p>
-                </CardContent>
-              </Card>
             </div>
 
-            {/* LIST */}
+            <div className="grid gap-4 px-4 lg:grid-cols-4 lg:px-6">
+              <div className="grid gap-2">
+                <Label>Bulan</Label>
+                <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
+              </div>
+              <div className="grid gap-2">
+                <Label>Jenis</Label>
+                <Select value={type} onValueChange={(v) => setType(v as any)}>
+                  <SelectTrigger><SelectValue placeholder="Semua jenis" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ALL">ALL</SelectItem>
+                    <SelectItem value="INCOME">INCOME</SelectItem>
+                    <SelectItem value="EXPENSE">EXPENSE</SelectItem>
+                    <SelectItem value="TRANSFER">TRANSFER</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-2">
+                <Label>Akun</Label>
+                <Select value={accountId} onValueChange={setAccountId}>
+                  <SelectTrigger><SelectValue placeholder="Semua akun" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL}>Semua akun</SelectItem>
+                    {accounts.map(a => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-2">
+                <Label>Kategori</Label>
+                <Select value={categoryId} onValueChange={setCategoryId}>
+                  <SelectTrigger><SelectValue placeholder="Semua kategori" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL}>Semua kategori</SelectItem>
+                    {categories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            {/* List */}
             <div className="px-4 lg:px-6">
               <Card>
-                <CardHeader><CardTitle>Transaksi Terbaru</CardTitle></CardHeader>
+                <CardHeader><CardTitle>Daftar Transaksi</CardTitle></CardHeader>
                 <CardContent>
                   {loading ? (
                     <p className="text-sm text-muted-foreground">Memuat…</p>
@@ -270,32 +174,36 @@ export default function TransactionsPage() {
                           <tr>
                             <th className="py-2">Tanggal</th>
                             <th>Jenis</th>
-                            <th>Rekening</th>
-                            <th>Kategori / Catatan</th>
+                            <th>Detail</th>
                             <th className="text-right">Nominal</th>
-                            <th></th>
+                            <th className="text-right">Aksi</th>
                           </tr>
                         </thead>
                         <tbody>
                           {txs.map((t) => (
-                            <tr key={t.id} className="border-t">
+                            <tr key={t.id} className="border-top">
                               <td className="py-2">{t.date.slice(0,10)}</td>
                               <td>{t.type}</td>
-                              <td className="max-w-[220px] truncate">
-                                {t.type === "TRANSFER"
-                                  ? `${t.fromAccount?.name ?? "-"} ➜ ${t.toAccount?.name ?? "-"}`
-                                  : t.account?.name ?? "-"}
+                              <td className="max-w-[420px]">
+                                <div className="truncate">
+                                  {t.type === "TRANSFER" ? (
+                                    t.amount < 0
+                                      ? <>Transfer keluar (from: {t.fromAccountId})</>
+                                      : <>Transfer masuk (to: {t.toAccountId})</>
+                                  ) : (
+                                    <>
+                                      {t.note ?? "—"}
+                                      {t.categoryId ? <span className="text-xs text-muted-foreground"> · cat:{t.categoryId}</span> : null}
+                                      {t.accountId ? <span className="text-xs text-muted-foreground"> · acc:{t.accountId}</span> : null}
+                                    </>
+                                  )}
+                                </div>
                               </td>
-                              <td className="max-w-[280px] truncate">
-                                {t.type === "TRANSFER"
-                                  ? (t.note || "-")
-                                  : (t.category?.name ? `${t.category.name}${t.note ? " • " + t.note : ""}` : (t.note || "-"))}
+                              <td className={`text-right ${t.amount < 0 ? "text-red-600" : "text-green-600"} font-medium`}>
+                                {fmt(Math.abs(t.amount))}
                               </td>
-                              <td className="text-right">{fmt(t.amount)}</td>
                               <td className="text-right">
-                                <Button variant="outline" size="sm" onClick={() => onDelete(t.id)}>
-                                  Hapus
-                                </Button>
+                                <Button size="sm" variant="outline" onClick={() => onDelete(t.id)}>Hapus</Button>
                               </td>
                             </tr>
                           ))}
@@ -309,6 +217,9 @@ export default function TransactionsPage() {
           </div>
         </div>
       </SidebarInset>
+
+      {/* Quick Create dialog */}
+      <QuickCreate open={openQC} onOpenChange={setOpenQC} onCreated={() => loadAll()} />
     </SidebarProvider>
   );
 }

@@ -1,11 +1,19 @@
+// ========================
+// Prisma schema
+// ========================
+
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite" // nanti gampang ganti ke "postgresql"
+  provider = "sqlite" // dev: SQLite (DATABASE_URL di .env -> file:./dev.db)
   url      = env("DATABASE_URL")
 }
+
+// ========================
+// Enums
+// ========================
 
 enum AccountType {
   BANK
@@ -25,8 +33,13 @@ enum TxType {
 }
 
 enum DebtKind {
-  HUTANG
-  PIUTANG
+  HUTANG // saya berutang
+  PIUTANG // orang lain berutang ke saya
+}
+
+enum DebtStatus {
+  OPEN
+  PAID
 }
 
 enum SubFrequency {
@@ -35,63 +48,70 @@ enum SubFrequency {
   YEARLY
 }
 
+// ========================
+// Models
+// ========================
+
 model Account {
   id             String      @id @default(cuid())
   name           String
   type           AccountType
   currency       String      @default("IDR")
   initialBalance Int         @default(0)
+  createdAt      DateTime    @default(now())
 
-  // relasi transaksi non-transfer (akun tunggal)
+  // Relasi transaksi biasa (INCOME/EXPENSE)
   transactions Transaction[] @relation("AccountTransactions")
 
-  // relasi transfer (dua sisi)
+  // Relasi transfer (keluar & masuk)
   outgoingTransfers Transaction[] @relation("OutgoingTransfers")
   incomingTransfers Transaction[] @relation("IncomingTransfers")
 
-  // relasi lain
-  debtPayments  DebtPayment[]
+  // Pembayaran hutang/piutang yg memakai akun ini
+  debtPayments DebtPayment[]
+
+  // Langganan yang default akun-nya ke sini
   subscriptions Subscription[]
-
-  createdAt DateTime @default(now())
-
-  @@index([name])
 }
 
 model Category {
-  id           String        @id @default(cuid())
+  id           String       @id @default(cuid())
   name         String
   type         CategoryType
-  isBudgetable Boolean       @default(true)
-  transactions Transaction[]
-  createdAt    DateTime      @default(now())
-  BudgetItem   BudgetItem[]
+  isBudgetable Boolean      @default(true)
+  createdAt    DateTime     @default(now())
 
-  @@unique([name, type])
+  // Transaksi yang memakai kategori ini
+  transactions Transaction[]
+
+  // Budget per bulan untuk kategori ini
+  budgets Budget[]
 }
 
 model Transaction {
-  id     String   @id @default(cuid())
-  type   TxType
-  amount Int // rupiah (integer)
-  date   DateTime
-  note   String?
+  id        String   @id @default(cuid())
+  type      TxType
+  amount    Int // INCOME (+), EXPENSE (-), TRANSFER (+/-)
+  date      DateTime
+  note      String?
+  createdAt DateTime @default(now())
 
-  // non-transfer
-  account    Account?  @relation("AccountTransactions", fields: [accountId], references: [id])
-  accountId  String?
-  category   Category? @relation(fields: [categoryId], references: [id])
+  // Transaksi biasa (INCOME/EXPENSE) -> satu akun
+  account   Account? @relation("AccountTransactions", fields: [accountId], references: [id], onDelete: SetNull)
+  accountId String?
+
+  // Kategori (opsional untuk INCOME/EXPENSE)
+  category   Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   categoryId String?
 
-  // transfer (dua baris dengan grup sama)
-  fromAccount     Account? @relation("OutgoingTransfers", fields: [fromAccountId], references: [id])
+  // Transfer: pecah dua baris (+ dan -) & di-link oleh transferGroupId
+  fromAccount     Account? @relation("OutgoingTransfers", fields: [fromAccountId], references: [id], onDelete: SetNull)
   fromAccountId   String?
-  toAccount       Account? @relation("IncomingTransfers", fields: [toAccountId], references: [id])
+  toAccount       Account? @relation("IncomingTransfers", fields: [toAccountId], references: [id], onDelete: SetNull)
   toAccountId     String?
   transferGroupId String?
 
-  createdAt DateTime @default(now())
-
+  // Link 1:1 jika transaksi ini berasal dari DebtPayment
   debtPayment DebtPayment? @relation("PaymentTransaction")
 
   @@index([date])
@@ -99,60 +119,64 @@ model Transaction {
   @@index([fromAccountId])
   @@index([toAccountId])
   @@index([categoryId])
-}
-
-model Budget {
-  id        String       @id @default(cuid())
-  month     String // "YYYY-MM"
-  items     BudgetItem[]
-  createdAt DateTime     @default(now())
-
-  @@unique([month])
-}
-
-model BudgetItem {
-  id            String   @id @default(cuid())
-  budget        Budget   @relation(fields: [budgetId], references: [id])
-  budgetId      String
-  category      Category @relation(fields: [categoryId], references: [id])
-  categoryId    String
-  amountPlanned Int
-
-  @@unique([budgetId, categoryId])
+  @@index([transferGroupId])
 }
 
 model Debt {
-  id               String        @id @default(cuid())
+  id               String     @id @default(cuid())
   kind             DebtKind
   counterpartyName String
-  principalAmount  Int
-  remainingAmount  Int
+  principalAmount  Int // jumlah awal
+  remainingAmount  Int // sisa yang belum dibayar/diterima
   dueDate          DateTime?
-  status           String        @default("OPEN") // OPEN / PAID
-  payments         DebtPayment[]
-  createdAt        DateTime      @default(now())
+  status           DebtStatus @default(OPEN)
+  createdAt        DateTime   @default(now())
+
+  payments DebtPayment[]
+
+  @@index([dueDate])
+  @@index([status])
 }
 
 model DebtPayment {
-  id            String       @id @default(cuid())
-  debt          Debt         @relation(fields: [debtId], references: [id])
-  debtId        String
-  date          DateTime
-  amount        Int
-  account       Account?     @relation(fields: [accountId], references: [id])
-  accountId     String?
-  transaction   Transaction? @relation("PaymentTransaction", fields: [transactionId], references: [id])
+  id        String   @id @default(cuid())
+  debt      Debt     @relation(fields: [debtId], references: [id], onDelete: Cascade)
+  debtId    String
+  date      DateTime
+  amount    Int
+  account   Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  accountId String?
+
+  // Tautan ke transaksi yang otomatis dibuat ketika bayar/cair
+  transaction   Transaction? @relation("PaymentTransaction", fields: [transactionId], references: [id], onDelete: SetNull)
   transactionId String?      @unique
 }
 
 model Subscription {
   id          String       @id @default(cuid())
   name        String
-  amount      Int
-  frequency   SubFrequency @default(MONTHLY)
+  amount      Int // nilai charge per periode (positif)
+  frequency   SubFrequency
   nextDueDate DateTime
   isActive    Boolean      @default(true)
-  account     Account?     @relation(fields: [accountId], references: [id])
-  accountId   String?
   createdAt   DateTime     @default(now())
+
+  // Akun default untuk charge (opsional)
+  account   Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  accountId String?
+
+  @@index([nextDueDate])
+  @@index([isActive])
+}
+
+model Budget {
+  id         String   @id @default(cuid())
+  month      String // "YYYY-MM"
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  categoryId String
+  amount     Int // target pengeluaran (positif)
+  createdAt  DateTime @default(now())
+
+  @@unique([month, categoryId])
+  @@index([month])
 }

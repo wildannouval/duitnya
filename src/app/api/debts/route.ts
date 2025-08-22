@@ -1,61 +1,42 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 
-// GET /api/debts?kind=HUTANG|PIUTANG&status=OPEN|PAID
-export async function GET(req: Request) {
-  const u = new URL(req.url);
-  const kind = u.searchParams.get("kind") as "HUTANG" | "PIUTANG" | null;
-  const status = u.searchParams.get("status") as "OPEN" | "PAID" | null;
+type DebtKind = "HUTANG" | "PIUTANG";
 
-  const debts = await prisma.debt.findMany({
-    where: {
-      ...(kind ? { kind } : {}),
-      ...(status ? { status } : {}),
-    },
-    include: {
-      payments: { orderBy: { date: "desc" } },
-    },
+// GET /api/debts
+export async function GET() {
+  const items = await prisma.debt.findMany({
     orderBy: [{ status: "asc" }, { dueDate: "asc" }, { createdAt: "desc" }],
   });
-
-  return NextResponse.json(debts);
+  return NextResponse.json(items);
 }
 
-// POST /api/debts
-// body: { kind: "HUTANG"|"PIUTANG", counterpartyName: string, principalAmount: number, dueDate?: "YYYY-MM-DD" }
+// POST /api/debts  { kind, counterpartyName, principalAmount, dueDate? }
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const kind = body?.kind as "HUTANG" | "PIUTANG";
-    const counterpartyName = String(body?.counterpartyName ?? "").trim();
-    const principalAmount = Number(body?.principalAmount);
-    const dueStr = body?.dueDate ? String(body.dueDate) : null;
+    const b = await req.json();
+    const kind = String(b?.kind ?? "") as DebtKind;
+    const counterpartyName = String(b?.counterpartyName ?? "").trim();
+    const principalAmount = Math.round(Number(b?.principalAmount ?? 0));
+    const dueDateStr = b?.dueDate ? String(b.dueDate) : "";
 
     if (!["HUTANG", "PIUTANG"].includes(kind)) {
-      return NextResponse.json({ error: "kind harus HUTANG atau PIUTANG." }, { status: 400 });
+      return NextResponse.json({ error: "kind harus HUTANG/PIUTANG" }, { status: 400 });
     }
-    if (!counterpartyName) {
-      return NextResponse.json({ error: "Nama pihak wajib diisi." }, { status: 400 });
-    }
+    if (!counterpartyName) return NextResponse.json({ error: "Nama pihak wajib" }, { status: 400 });
     if (!Number.isFinite(principalAmount) || principalAmount <= 0) {
-      return NextResponse.json({ error: "Nominal pokok harus angka > 0." }, { status: 400 });
+      return NextResponse.json({ error: "Jumlah harus > 0" }, { status: 400 });
     }
-
-    const dueDate = dueStr && /^\d{4}-\d{2}-\d{2}$/.test(dueStr)
-      ? new Date(`${dueStr}T00:00:00.000Z`)
-      : null;
 
     const created = await prisma.debt.create({
       data: {
         kind,
         counterpartyName,
-        principalAmount: Math.round(principalAmount),
-        remainingAmount: Math.round(principalAmount),
-        dueDate,
-        status: "OPEN",
+        principalAmount,
+        remainingAmount: principalAmount,
+        dueDate: dueDateStr ? new Date(dueDateStr + "T00:00:00.000Z") : null,
       },
     });
-
     return NextResponse.json(created, { status: 201 });
   } catch {
     return NextResponse.json({ error: "Bad request" }, { status: 400 });

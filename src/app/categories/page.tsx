@@ -5,94 +5,82 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { SiteHeader } from "@/components/site-header";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
 import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from "@/components/ui/select";
+import { toast } from "sonner";
 
-type CategoryType = "INCOME" | "EXPENSE";
 type Category = {
   id: string;
   name: string;
-  type: CategoryType;
+  type: "INCOME" | "EXPENSE";
   isBudgetable: boolean;
   createdAt: string;
 };
 
 export default function CategoriesPage() {
-  const [categories, setCategories] = React.useState<Category[]>([]);
+  const [list, setList] = React.useState<Category[]>([]);
   const [loading, setLoading] = React.useState(true);
-  const [submitting, setSubmitting] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
 
   // form
   const [name, setName] = React.useState("");
-  const [type, setType] = React.useState<CategoryType>("EXPENSE");
-  const [isBudgetable, setIsBudgetable] = React.useState(true);
+  const [type, setType] = React.useState<"INCOME" | "EXPENSE">("EXPENSE");
+  const [budgetable, setBudgetable] = React.useState<"YA" | "TIDAK">("YA");
 
-  // load data
-  React.useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch("/api/categories", { cache: "no-store" });
-        const data = await res.json();
-        setCategories(data);
-      } catch {
-        setError("Gagal memuat kategori.");
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
-
-  async function onAdd(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    if (!name.trim()) return setError("Nama kategori wajib diisi.");
-
-    setSubmitting(true);
+  async function loadAll() {
+    setLoading(true);
     try {
-      const res = await fetch("/api/categories", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: name.trim(),
-          type,
-          isBudgetable,
-        }),
-      });
-      const created = await res.json();
-      if (!res.ok) return setError(created?.error ?? "Gagal menambah kategori.");
-
-      setCategories((prev) => [created, ...prev]);
-      setName(""); setType("EXPENSE"); setIsBudgetable(true);
-    } catch {
-      setError("Gagal menambah kategori.");
+      const res = await fetch("/api/categories", { cache: "no-store" });
+      const j = await res.json();
+      setList(j);
     } finally {
-      setSubmitting(false);
+      setLoading(false);
     }
+  }
+  React.useEffect(() => { loadAll(); }, []);
+
+  async function onCreate(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim()) return toast.error("Nama kategori wajib diisi");
+    const res = await fetch("/api/categories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: name.trim(),
+        type,
+        isBudgetable: budgetable === "YA",
+      }),
+    });
+    const j = await res.json();
+    if (!res.ok) return toast.error(j?.error ?? "Gagal menambah kategori");
+    toast.success("Kategori ditambahkan");
+    setName(""); setType("EXPENSE"); setBudgetable("YA");
+    loadAll();
+  }
+
+  async function onToggleBudgetable(cat: Category) {
+    const res = await fetch(`/api/categories/${cat.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isBudgetable: !cat.isBudgetable }),
+    });
+    const j = await res.json();
+    if (!res.ok) return toast.error(j?.error ?? "Gagal update");
+    setList(prev => prev.map(c => c.id === cat.id ? j : c));
+    toast.success("Diupdate");
   }
 
   async function onDelete(id: string) {
-    const ok = confirm("Hapus kategori ini?");
-    if (!ok) return;
-    try {
-      const res = await fetch(`/api/categories/${id}`, { method: "DELETE" });
-      if (!res.ok) {
-        const j = await res.json();
-        alert(j?.error ?? "Gagal menghapus");
-        return;
-      }
-      setCategories((prev) => prev.filter((c) => c.id !== id));
-    } catch {
-      alert("Gagal menghapus");
-    }
+    if (!confirm("Hapus kategori ini? (pastikan tidak dipakai transaksi)")) return;
+    const res = await fetch(`/api/categories/${id}`, { method: "DELETE" });
+    const j = await res.json();
+    if (!res.ok) return toast.error(j?.error ?? "Gagal menghapus");
+    toast.success("Kategori dihapus");
+    setList(prev => prev.filter(c => c.id !== id));
   }
-
-  const incomeCount = categories.filter((c) => c.type === "INCOME").length;
-  const expenseCount = categories.filter((c) => c.type === "EXPENSE").length;
 
   return (
     <SidebarProvider style={{ "--sidebar-width": "calc(var(--spacing) * 72)", "--header-height": "calc(var(--spacing) * 12)" } as React.CSSProperties}>
@@ -101,19 +89,20 @@ export default function CategoriesPage() {
         <SiteHeader />
         <div className="flex flex-1 flex-col @container/main">
           <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
+            <div className="px-4 lg:px-6"><h1 className="text-xl font-semibold">Kategori</h1></div>
+
             <div className="grid gap-4 px-4 lg:grid-cols-3 lg:px-6">
-              {/* Form */}
               <Card className="lg:col-span-2">
                 <CardHeader><CardTitle>Tambah Kategori</CardTitle></CardHeader>
                 <CardContent>
-                  <form onSubmit={onAdd} className="grid gap-4">
+                  <form onSubmit={onCreate} className="grid gap-4">
                     <div className="grid gap-2">
-                      <Label>Nama Kategori</Label>
-                      <Input placeholder="Makan, Transport, Gaji, dll." value={name} onChange={(e) => setName(e.target.value)} />
+                      <Label>Nama</Label>
+                      <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Makan, Gaji, Listrik" />
                     </div>
                     <div className="grid gap-2">
                       <Label>Jenis</Label>
-                      <Select value={type} onValueChange={(v) => setType(v as CategoryType)}>
+                      <Select value={type} onValueChange={(v) => setType(v as any)}>
                         <SelectTrigger><SelectValue placeholder="Pilih jenis" /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="INCOME">INCOME</SelectItem>
@@ -121,62 +110,71 @@ export default function CategoriesPage() {
                         </SelectContent>
                       </Select>
                     </div>
-                    <div className="flex items-center gap-2 text-sm">
-                      <input
-                        id="budgetable"
-                        type="checkbox"
-                        checked={isBudgetable}
-                        onChange={(e) => setIsBudgetable(e.target.checked)}
-                      />
-                      <Label htmlFor="budgetable">Masuk perhitungan budget</Label>
+                    <div className="grid gap-2">
+                      <Label>Ikut Budget?</Label>
+                      <Select value={budgetable} onValueChange={(v) => setBudgetable(v as "YA"|"TIDAK")}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="YA">YA</SelectItem>
+                          <SelectItem value="TIDAK">TIDAK</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">Biasanya hanya kategori EXPENSE yang di-budget.</p>
                     </div>
-                    {error && <p className="text-sm text-red-600">{error}</p>}
-                    <Button type="submit" disabled={submitting}>
-                      {submitting ? "Menyimpan..." : "Tambah Kategori"}
-                    </Button>
+                    <Button type="submit">Simpan</Button>
                   </form>
                 </CardContent>
               </Card>
 
-              {/* Ringkasan */}
               <Card>
-                <CardHeader><CardTitle>Ringkasan</CardTitle></CardHeader>
-                <CardContent className="text-sm space-y-2">
-                  <div className="flex justify-between"><span>Income</span><span className="font-medium">{incomeCount}</span></div>
-                  <div className="flex justify-between"><span>Expense</span><span className="font-medium">{expenseCount}</span></div>
+                <CardHeader><CardTitle>Info</CardTitle></CardHeader>
+                <CardContent className="text-sm text-muted-foreground space-y-2">
+                  <p>Kategori <b>INCOME</b> tidak muncul di Budget.</p>
+                  <p>Kamu bisa toggle “Ikut Budget” untuk kategori EXPENSE.</p>
                 </CardContent>
               </Card>
             </div>
 
-            {/* List */}
             <div className="px-4 lg:px-6">
               <Card>
                 <CardHeader><CardTitle>Daftar Kategori</CardTitle></CardHeader>
                 <CardContent>
-                  {loading ? (
-                    <p className="text-sm text-muted-foreground">Memuat…</p>
-                  ) : categories.length === 0 ? (
+                  {loading ? <p className="text-sm text-muted-foreground">Memuat…</p> : list.length === 0 ? (
                     <p className="text-sm text-muted-foreground">Belum ada kategori.</p>
                   ) : (
-                    <ul className="divide-y">
-                      {categories.map((c) => (
-                        <li key={c.id} className="flex items-center justify-between py-3">
-                          <div>
-                            <div className="font-medium">{c.name}</div>
-                            <div className="text-xs text-muted-foreground">
-                              {c.type} {c.isBudgetable ? "• budgetable" : ""}
-                            </div>
-                          </div>
-                          <Button variant="outline" size="sm" onClick={() => onDelete(c.id)}>
-                            Hapus
-                          </Button>
-                        </li>
-                      ))}
-                    </ul>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="text-left text-muted-foreground">
+                          <tr>
+                            <th className="py-2">Nama</th>
+                            <th>Jenis</th>
+                            <th>Ikut Budget</th>
+                            <th className="text-right">Aksi</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {list.map(c => (
+                            <tr key={c.id} className="border-t">
+                              <td className="py-2">{c.name}</td>
+                              <td>{c.type}</td>
+                              <td>
+                                <Button size="sm" variant="outline" onClick={() => onToggleBudgetable(c)}>
+                                  {c.isBudgetable ? "YA" : "TIDAK"}
+                                </Button>
+                              </td>
+                              <td className="text-right">
+                                <Button size="sm" variant="outline" onClick={() => onDelete(c.id)}>Hapus</Button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
                 </CardContent>
               </Card>
             </div>
+
           </div>
         </div>
       </SidebarInset>

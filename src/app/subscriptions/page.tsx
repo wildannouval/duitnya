@@ -6,46 +6,38 @@ import { SiteHeader } from "@/components/site-header";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { InputCurrency } from "@/components/input-currency";
+import { parseCurrencyToInt, formatIDR } from "@/lib/money";
+import { toast } from "sonner";
+import { ChargeSubscriptionDialog, type SubRow } from "@/components/charge-subscription-dialog";
 
 type Freq = "WEEKLY" | "MONTHLY" | "YEARLY";
 type Account = { id: string; name: string };
-type SubRow = {
-  id: string;
-  name: string;
-  amount: number;
-  frequency: Freq;
-  nextDueDate: string;
-  isActive: boolean;
-  account?: Account | null;
-  accountId?: string | null;
-};
+type Row = SubRow & { account?: Account | null };
 
-// sentinel untuk opsi kosong akun (Select tidak boleh value="")
 const NONE = "__none__";
 
 export default function SubscriptionsPage() {
-  const [subs, setSubs] = React.useState<SubRow[]>([]);
+  const [subs, setSubs] = React.useState<Row[]>([]);
   const [accounts, setAccounts] = React.useState<Account[]>([]);
   const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState<string | null>(null);
-  const [submitting, setSubmitting] = React.useState(false);
+  const [creating, setCreating] = React.useState(false);
 
   // form create
   const [name, setName] = React.useState("");
   const [amount, setAmount] = React.useState("0");
   const [frequency, setFrequency] = React.useState<Freq>("MONTHLY");
-  const [nextDue, setNextDue] = React.useState<string>(() =>
-    new Date().toISOString().slice(0,10)
-  );
-  const [accountId, setAccountId] = React.useState<string>("");
+  const [nextDue, setNextDue] = React.useState(() => new Date().toISOString().slice(0, 10));
+  const [accountId, setAccountId] = React.useState("");
 
-  const fmt = (n: number) =>
-    new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(n);
+  // dialog charge
+  const [openCharge, setOpenCharge] = React.useState(false);
+  const [activeSub, setActiveSub] = React.useState<Row | null>(null);
 
   async function loadAll() {
     setLoading(true);
@@ -57,8 +49,6 @@ export default function SubscriptionsPage() {
       const [a, s] = await Promise.all([aRes.json(), sRes.json()]);
       setAccounts(a);
       setSubs(s);
-    } catch {
-      setError("Gagal memuat langganan.");
     } finally {
       setLoading(false);
     }
@@ -67,12 +57,11 @@ export default function SubscriptionsPage() {
 
   async function onCreate(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
-    const amt = Number(amount.replace(/[^\d-]/g, ""));
-    if (!name.trim()) return setError("Nama wajib diisi.");
-    if (!Number.isFinite(amt) || amt <= 0) return setError("Nominal harus > 0.");
+    const amt = parseCurrencyToInt(amount);
+    if (!name.trim()) return toast.error("Nama wajib");
+    if (amt <= 0) return toast.error("Nominal harus > 0");
 
-    setSubmitting(true);
+    setCreating(true);
     try {
       const res = await fetch("/api/subscriptions", {
         method: "POST",
@@ -86,83 +75,65 @@ export default function SubscriptionsPage() {
           isActive: true,
         }),
       });
-      const created = await res.json();
-      if (!res.ok) return setError(created?.error ?? "Gagal menambah langganan.");
-
-      setSubs((prev) => [created, ...prev]);
+      const j = await res.json();
+      if (!res.ok) return toast.error(j?.error ?? "Gagal menambah");
+      toast.success("Langganan ditambahkan");
+      setSubs((p) => [j, ...p]);
       setName(""); setAmount("0"); setFrequency("MONTHLY");
-      setNextDue(new Date().toISOString().slice(0,10));
+      setNextDue(new Date().toISOString().slice(0, 10));
       setAccountId("");
-    } catch {
-      setError("Gagal menambah langganan.");
     } finally {
-      setSubmitting(false);
+      setCreating(false);
     }
   }
 
-  async function toggleActive(s: SubRow) {
+  async function toggleActive(s: Row) {
     const res = await fetch(`/api/subscriptions/${s.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ isActive: !s.isActive }),
     });
-    const updated = await res.json();
-    if (!res.ok) return alert(updated?.error ?? "Gagal update status.");
-    setSubs((prev) => prev.map(x => x.id === s.id ? updated : x));
+    const j = await res.json();
+    if (!res.ok) return toast.error(j?.error ?? "Gagal update");
+    setSubs((prev) => prev.map((x) => (x.id === s.id ? j : x)));
+    toast.success("Status diperbarui");
   }
 
-  async function updateAccount(s: SubRow, newAccountId: string) {
+  async function updateAccount(s: Row, newAccountId: string) {
     const body: any = { accountId: newAccountId === NONE ? "" : newAccountId };
     const res = await fetch(`/api/subscriptions/${s.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    const updated = await res.json();
-    if (!res.ok) return alert(updated?.error ?? "Gagal set akun.");
-    setSubs((prev) => prev.map(x => x.id === s.id ? updated : x));
+    const j = await res.json();
+    if (!res.ok) return toast.error(j?.error ?? "Gagal set akun");
+    setSubs((prev) => prev.map((x) => (x.id === s.id ? j : x)));
+    toast.success("Akun default diupdate");
   }
 
   async function onDelete(id: string) {
-    const ok = confirm("Hapus langganan ini?");
-    if (!ok) return;
+    if (!confirm("Hapus langganan ini?")) return;
     const res = await fetch(`/api/subscriptions/${id}`, { method: "DELETE" });
-    if (!res.ok) {
-      const j = await res.json();
-      alert(j?.error ?? "Gagal menghapus.");
-      return;
-    }
-    setSubs((prev) => prev.filter((x) => x.id !== id));
-  }
-
-  async function charge(s: SubRow, opt?: { accountId?: string; amount?: number; date?: string }) {
-    const res = await fetch(`/api/subscriptions/${s.id}/charge`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(opt ?? {}),
-    });
     const j = await res.json();
-    if (!res.ok) {
-      alert(j?.error ?? "Gagal charge.");
-      return;
-    }
-    // majunya nextDueDate sudah dilakukan server → refresh list
-    await loadAll();
-    alert("Berhasil dicatat sebagai transaksi.");
+    if (!res.ok) return toast.error(j?.error ?? "Gagal menghapus");
+    setSubs((prev) => prev.filter((x) => x.id !== id));
+    toast.success("Langganan dihapus");
   }
 
-  const daysTo = (s: SubRow) => {
+  const daysTo = (s: Row) => {
     const due = new Date(s.nextDueDate);
     const today = new Date();
-    return Math.ceil((+due - +today) / (1000*60*60*24));
+    return Math.ceil((+due - +today) / 86_400_000);
   };
-  const dueBadge = (s: SubRow) => {
+  const dueBadge = (s: Row) => {
     const d = daysTo(s);
-    const label = s.nextDueDate.slice(0,10);
+    const label = s.nextDueDate.slice(0, 10);
     if (d < 0) return <span className="text-xs text-red-600">Lewat {Math.abs(d)}h · {label}</span>;
     if (d === 0) return <span className="text-xs text-orange-600">Hari ini · {label}</span>;
     return <span className="text-xs text-muted-foreground">Dlm {d}h · {label}</span>;
   };
+  const fmt = (n: number) => formatIDR(n);
 
   return (
     <SidebarProvider style={{ "--sidebar-width": "calc(var(--spacing) * 72)", "--header-height": "calc(var(--spacing) * 12)" } as React.CSSProperties}>
@@ -185,7 +156,7 @@ export default function SubscriptionsPage() {
                     </div>
                     <div className="grid gap-2">
                       <Label>Nominal (Rp)</Label>
-                      <Input inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value)} />
+                      <InputCurrency value={amount} onValueChange={setAmount} />
                     </div>
                     <div className="grid gap-2">
                       <Label>Frekuensi</Label>
@@ -208,13 +179,14 @@ export default function SubscriptionsPage() {
                         <SelectTrigger><SelectValue placeholder="Pilih akun (opsional)" /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value={NONE}>—</SelectItem>
-                          {accounts.map(a => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}
+                          {accounts.map((a) => (
+                            <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
+                          ))}
                         </SelectContent>
                       </Select>
-                      <p className="text-xs text-muted-foreground">Bila diisi, saat “Charge” otomatis pakai akun ini.</p>
+                      <p className="text-xs text-muted-foreground">Jika diisi, “Charge” otomatis pakai akun ini.</p>
                     </div>
-                    {error && <p className="text-sm text-red-600">{error}</p>}
-                    <Button type="submit" disabled={submitting}>{submitting ? "Menyimpan..." : "Simpan"}</Button>
+                    <Button type="submit" disabled={creating}>{creating ? "Menyimpan…" : "Simpan"}</Button>
                   </form>
                 </CardContent>
               </Card>
@@ -222,8 +194,7 @@ export default function SubscriptionsPage() {
               <Card>
                 <CardHeader><CardTitle>Info</CardTitle></CardHeader>
                 <CardContent className="text-sm text-muted-foreground space-y-2">
-                  <p>“Charge now” akan membuat transaksi <b>EXPENSE</b> dan memajukan tanggal jatuh tempo otomatis.</p>
-                  <p>Akun default opsional—kalau kosong, saat charge kamu harus memilih akun.</p>
+                  <p>“Charge now” membuat transaksi <b>EXPENSE</b> dan memajukan tanggal due.</p>
                 </CardContent>
               </Card>
             </div>
@@ -259,28 +230,19 @@ export default function SubscriptionsPage() {
                               <td>{s.frequency}</td>
                               <td>{dueBadge(s)}</td>
                               <td className="max-w-[220px]">
-                                <Select
-                                  value={s.accountId || NONE}
-                                  onValueChange={(v) => updateAccount(s, v)}
-                                >
+                                <Select value={s.accountId || NONE} onValueChange={(v) => updateAccount(s, v)}>
                                   <SelectTrigger><SelectValue placeholder="Pilih akun (opsional)" /></SelectTrigger>
                                   <SelectContent>
                                     <SelectItem value={NONE}>—</SelectItem>
-                                    {accounts.map(a => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}
+                                    {accounts.map((a) => (
+                                      <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
+                                    ))}
                                   </SelectContent>
                                 </Select>
                               </td>
                               <td>{s.isActive ? "ACTIVE" : "PAUSED"}</td>
                               <td className="text-right space-x-2">
-                                <Button size="sm" onClick={() => {
-                                  if (s.accountId) {
-                                    charge(s);
-                                  } else {
-                                    const chosen = prompt("Masukkan accountId (atau kosongkan untuk batal):\n" + accounts.map(a => `${a.name} → ${a.id}`).join("\n"));
-                                    if (!chosen) return;
-                                    charge(s, { accountId: chosen });
-                                  }
-                                }}>
+                                <Button size="sm" onClick={() => { setActiveSub(s); setOpenCharge(true); }}>
                                   Charge now
                                 </Button>
                                 <Button size="sm" variant="outline" onClick={() => toggleActive(s)}>
@@ -299,10 +261,18 @@ export default function SubscriptionsPage() {
                 </CardContent>
               </Card>
             </div>
-
           </div>
         </div>
       </SidebarInset>
+
+      {/* Dialog Charge */}
+      <ChargeSubscriptionDialog
+        open={openCharge}
+        onOpenChange={setOpenCharge}
+        sub={activeSub}
+        accounts={accounts}
+        onCharged={() => loadAll()}
+      />
     </SidebarProvider>
   );
 }

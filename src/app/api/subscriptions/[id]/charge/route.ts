@@ -1,73 +1,58 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 
-function addMonthsKeepDay(d: Date, months: number) {
-  const y = d.getUTCFullYear();
-  const m = d.getUTCMonth();
-  const day = d.getUTCDate();
-  const next = new Date(Date.UTC(y, m + months, 1, 0, 0, 0));
-  const lastDay = new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth() + 1, 0)).getUTCDate();
-  next.setUTCDate(Math.min(day, lastDay));
-  return next;
-}
-function nextDue(current: Date, freq: "WEEKLY" | "MONTHLY" | "YEARLY") {
-  if (freq === "WEEKLY") return new Date(current.getTime() + 7 * 24 * 60 * 60 * 1000);
-  if (freq === "MONTHLY") return addMonthsKeepDay(current, 1);
-  return addMonthsKeepDay(current, 12);
+type Freq = "WEEKLY" | "MONTHLY" | "YEARLY";
+
+function advance(date: Date, freq: Freq) {
+  const d = new Date(date);
+  if (freq === "WEEKLY") d.setUTCDate(d.getUTCDate() + 7);
+  else if (freq === "MONTHLY") d.setUTCMonth(d.getUTCMonth() + 1);
+  else if (freq === "YEARLY") d.setUTCFullYear(d.getUTCFullYear() + 1);
+  return d;
 }
 
-// POST /api/subscriptions/:id/charge
-// body: { date?: "YYYY-MM-DD", amount?: number, accountId?: string }
+// POST /api/subscriptions/:id/charge  { amount, date, accountId? }
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   try {
-    const body = await req.json();
-    const overrideDate = typeof body?.date === "string" ? body.date : null;
-    const overrideAmount = Number.isFinite(body?.amount) ? Math.round(Number(body.amount)) : null;
-    const overrideAccountId = typeof body?.accountId === "string" ? String(body.accountId) : null;
+    const b = await req.json();
+    const amount = Math.round(Number(b?.amount ?? 0));
+    const dateStr = String(b?.date ?? "");
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return NextResponse.json({ error: "amount harus > 0" }, { status: 400 });
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      return NextResponse.json({ error: "format tanggal harus YYYY-MM-DD" }, { status: 400 });
+    }
 
     const sub = await prisma.subscription.findUnique({ where: { id: params.id } });
-    if (!sub) return NextResponse.json({ error: "Subscription tidak ditemukan." }, { status: 404 });
-    if (!sub.isActive) return NextResponse.json({ error: "Subscription tidak aktif." }, { status: 400 });
+    if (!sub) return NextResponse.json({ error: "Subscription tidak ditemukan" }, { status: 404 });
 
-    const date =
-      overrideDate && /^\d{4}-\d{2}-\d{2}$/.test(overrideDate)
-        ? new Date(`${overrideDate}T00:00:00.000Z`)
-        : sub.nextDueDate;
+    const accountId = b?.accountId ? String(b.accountId) : sub.accountId ?? "";
+    if (!accountId) {
+      return NextResponse.json({ error: "Akun wajib (isi di request atau set default di subscription)" }, { status: 400 });
+    }
 
-    const amount = overrideAmount && overrideAmount > 0 ? overrideAmount : sub.amount;
-
-    const accountId = overrideAccountId ?? sub.accountId;
-    if (!accountId) return NextResponse.json({ error: "Akun harus dipilih saat charge." }, { status: 400 });
-
-    const acc = await prisma.account.findUnique({ where: { id: accountId } });
-    if (!acc) return NextResponse.json({ error: "Akun tidak ditemukan." }, { status: 404 });
-
-    const next = nextDue(sub.nextDueDate, sub.frequency);
-
-    const result = await prisma.$transaction(async (tx) => {
-      // 1) buat transaksi EXPENSE
-      const t = await tx.transaction.create({
-        data: {
-          type: "EXPENSE",
-          amount: -Math.round(amount),
-          date,
-          note: `Langganan: ${sub.name}`,
-          accountId,
-        },
-      });
-
-      // 2) majukan due date
-      const updatedSub = await tx.subscription.update({
-        where: { id: params.id },
-        data: { nextDueDate: next },
-        include: { account: true },
-      });
-
-      return { transaction: t, subscription: updatedSub };
+    // create expense transaction
+    const tx = await prisma.transaction.create({
+      data: {
+        type: "EXPENSE",
+        amount: -amount,
+        date: new Date(dateStr + "T00:00:00.000Z"),
+        accountId,
+        note: `Subscription: ${sub.name}`,
+      },
     });
 
-    return NextResponse.json(result, { status: 201 });
-  } catch (e) {
+    // advance next due
+    const next = advance(new Date(sub.nextDueDate), sub.frequency as Freq);
+    const updated = await prisma.subscription.update({
+      where: { id: sub.id },
+      data: { nextDueDate: next },
+    });
+
+    return NextResponse.json({ subscription: updated, transaction: tx }, { status: 201 });
+  } catch {
     return NextResponse.json({ error: "Bad request" }, { status: 400 });
   }
 }

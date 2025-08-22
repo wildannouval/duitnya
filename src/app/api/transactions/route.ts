@@ -2,130 +2,139 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { randomUUID } from "crypto";
 
-// GET /api/transactions -> list transaksi (termasuk relasi utk tampilan)
-export async function GET() {
-  const txs = await prisma.transaction.findMany({
-    orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-    include: {
-      account: true,
-      fromAccount: true,
-      toAccount: true,
-      category: true,
-    },
-  });
-  return NextResponse.json(txs);
+type TxType = "INCOME" | "EXPENSE" | "TRANSFER";
+
+function parseYM(u: URL) {
+  const m = u.searchParams.get("month");
+  if (m && /^\d{4}-\d{2}$/.test(m)) {
+    const [y, mm] = m.split("-").map(Number);
+    const start = new Date(Date.UTC(y, mm - 1, 1, 0, 0, 0));
+    const end = new Date(Date.UTC(y, mm, 1, 0, 0, 0));
+    return { start, end };
+  }
+  return { start: undefined as Date | undefined, end: undefined as Date | undefined };
 }
 
-// POST /api/transactions -> tambah transaksi (INCOME/EXPENSE/TRANSFER)
+// GET /api/transactions?month=YYYY-MM&type=...&accountId=...&categoryId=...
+export async function GET(req: Request) {
+  const u = new URL(req.url);
+  const { start, end } = parseYM(u);
+  const type = u.searchParams.get("type") as TxType | null;
+  const accountId = u.searchParams.get("accountId");
+  const categoryId = u.searchParams.get("categoryId");
+
+  const where: any = {};
+  if (start && end) where.date = { gte: start, lt: end };
+  if (type && ["INCOME", "EXPENSE", "TRANSFER"].includes(type)) where.type = type;
+  if (accountId) {
+    // cocokkan transaksi biasa & transfer terkait akun tsb
+    where.OR = [
+      { accountId },
+      { fromAccountId: accountId },
+      { toAccountId: accountId },
+    ];
+  }
+  if (categoryId) where.categoryId = categoryId;
+
+  const list = await prisma.transaction.findMany({
+    where,
+    orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+  });
+
+  return NextResponse.json(list);
+}
+
+// POST /api/transactions
+// body (INCOME/EXPENSE): { type, amount, date, accountId, categoryId?, note? }
+// body (TRANSFER): { type:"TRANSFER", amount, date, fromAccountId, toAccountId, note? }
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
+    const b = await req.json();
+    const type = String(b?.type ?? "") as TxType;
 
-    const type = body?.type as "INCOME" | "EXPENSE" | "TRANSFER";
-    const amountRaw = Number(body?.amount);
-    const dateStr = String(body?.date ?? "");
-    const note = (body?.note ?? "").trim();
+    if (type === "INCOME" || type === "EXPENSE") {
+      const amount = Math.round(Number(b?.amount ?? 0));
+      const dateStr = String(b?.date ?? "");
+      const accountId = String(b?.accountId ?? "");
+      const categoryId = b?.categoryId ? String(b.categoryId) : undefined;
+      const note = b?.note ? String(b.note) : undefined;
 
-    if (!["INCOME", "EXPENSE", "TRANSFER"].includes(type)) {
-      return NextResponse.json({ error: "Jenis transaksi tidak valid." }, { status: 400 });
-    }
-    if (!Number.isFinite(amountRaw) || amountRaw <= 0) {
-      return NextResponse.json({ error: "Nominal harus angka > 0." }, { status: 400 });
-    }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-      return NextResponse.json({ error: "Format tanggal harus YYYY-MM-DD." }, { status: 400 });
-    }
-    const date = new Date(`${dateStr}T00:00:00.000Z`);
-    const amt = Math.round(Math.abs(amountRaw)); // rupiah integer
-
-    if (type === "TRANSFER") {
-      const fromAccountId = String(body?.fromAccountId ?? "");
-      const toAccountId = String(body?.toAccountId ?? "");
-      if (!fromAccountId || !toAccountId || fromAccountId === toAccountId) {
-        return NextResponse.json({ error: "Akun sumber & tujuan wajib diisi dan tidak boleh sama." }, { status: 400 });
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return NextResponse.json({ error: "amount harus > 0" }, { status: 400 });
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        return NextResponse.json({ error: "format tanggal harus YYYY-MM-DD" }, { status: 400 });
+      }
+      if (!accountId) {
+        return NextResponse.json({ error: "accountId wajib" }, { status: 400 });
       }
 
-      // pastikan akun ada
-      const [fromAcc, toAcc] = await Promise.all([
-        prisma.account.findUnique({ where: { id: fromAccountId } }),
-        prisma.account.findUnique({ where: { id: toAccountId } }),
-      ]);
-      if (!fromAcc || !toAcc) {
-        return NextResponse.json({ error: "Akun sumber/tujuan tidak ditemukan." }, { status: 404 });
-      }
-
-      const groupId = randomUUID();
-      const [outTx, inTx] = await prisma.$transaction([
-        prisma.transaction.create({
-          data: {
-            type: "TRANSFER",
-            amount: -amt,
-            date,
-            note,
-            fromAccountId,
-            transferGroupId: groupId,
-          },
-        }),
-        prisma.transaction.create({
-          data: {
-            type: "TRANSFER",
-            amount: amt,
-            date,
-            note,
-            toAccountId,
-            transferGroupId: groupId,
-          },
-        }),
-      ]);
-
-      const created = await prisma.transaction.findMany({
-        where: { transferGroupId: groupId },
-        include: { fromAccount: true, toAccount: true },
-        orderBy: { amount: "asc" }, // keluar (-) dulu lalu masuk (+)
+      const sign = type === "INCOME" ? 1 : -1;
+      const created = await prisma.transaction.create({
+        data: {
+          type,
+          amount: sign * amount,
+          date: new Date(dateStr + "T00:00:00.000Z"),
+          accountId,
+          categoryId,
+          note,
+        },
       });
       return NextResponse.json(created, { status: 201 });
     }
 
-    // INCOME / EXPENSE
-    const accountId = String(body?.accountId ?? "");
-    if (!accountId) {
-      return NextResponse.json({ error: "Akun wajib diisi." }, { status: 400 });
-    }
-    const account = await prisma.account.findUnique({ where: { id: accountId } });
-    if (!account) {
-      return NextResponse.json({ error: "Akun tidak ditemukan." }, { status: 404 });
-    }
+    if (type === "TRANSFER") {
+      const amount = Math.round(Number(b?.amount ?? 0));
+      const dateStr = String(b?.date ?? "");
+      const fromAccountId = String(b?.fromAccountId ?? "");
+      const toAccountId = String(b?.toAccountId ?? "");
+      const note = b?.note ? String(b.note) : undefined;
 
-    const categoryId = body?.categoryId ? String(body.categoryId) : undefined;
-    if (categoryId) {
-      const category = await prisma.category.findUnique({ where: { id: categoryId } });
-      if (!category) {
-        return NextResponse.json({ error: "Kategori tidak ditemukan." }, { status: 404 });
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return NextResponse.json({ error: "amount harus > 0" }, { status: 400 });
       }
-      if (type === "INCOME" && category.type !== "INCOME") {
-        return NextResponse.json({ error: "Kategori tidak sesuai (harus INCOME)." }, { status: 400 });
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        return NextResponse.json({ error: "format tanggal harus YYYY-MM-DD" }, { status: 400 });
       }
-      if (type === "EXPENSE" && category.type !== "EXPENSE") {
-        return NextResponse.json({ error: "Kategori tidak sesuai (harus EXPENSE)." }, { status: 400 });
+      if (!fromAccountId || !toAccountId) {
+        return NextResponse.json({ error: "fromAccountId & toAccountId wajib" }, { status: 400 });
       }
+      if (fromAccountId === toAccountId) {
+        return NextResponse.json({ error: "akun sumber & tujuan tidak boleh sama" }, { status: 400 });
+      }
+
+      const gid = randomUUID();
+
+      const [outgoing, incoming] = await prisma.$transaction([
+        prisma.transaction.create({
+          data: {
+            type: "TRANSFER",
+            amount: -amount,
+            date: new Date(dateStr + "T00:00:00.000Z"),
+            fromAccountId,
+            toAccountId,
+            transferGroupId: gid,
+            note,
+          },
+        }),
+        prisma.transaction.create({
+          data: {
+            type: "TRANSFER",
+            amount: +amount,
+            date: new Date(dateStr + "T00:00:00.000Z"),
+            fromAccountId,
+            toAccountId,
+            transferGroupId: gid,
+            note,
+          },
+        }),
+      ]);
+
+      return NextResponse.json({ groupId: gid, outgoing, incoming }, { status: 201 });
     }
 
-    const signed = type === "INCOME" ? amt : -amt;
-
-    const created = await prisma.transaction.create({
-      data: {
-        type,
-        amount: signed,
-        date,
-        note,
-        accountId,
-        categoryId,
-      },
-      include: { account: true, category: true },
-    });
-
-    return NextResponse.json(created, { status: 201 });
-  } catch (e) {
+    return NextResponse.json({ error: "type tidak dikenal" }, { status: 400 });
+  } catch {
     return NextResponse.json({ error: "Bad request" }, { status: 400 });
   }
 }

@@ -5,79 +5,83 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { SiteHeader } from "@/components/site-header";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectTrigger,
-  SelectValue,
-  SelectContent,
-  SelectItem,
-} from "@/components/ui/select";
+import { InputCurrency } from "@/components/input-currency";
+import { parseCurrencyToInt, formatIDR } from "@/lib/money";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { toast } from "sonner";
+
+type DebtKind = "HUTANG" | "PIUTANG";
+type DebtStatus = "OPEN" | "PAID";
 
 type Debt = {
   id: string;
-  kind: "HUTANG" | "PIUTANG";
+  kind: DebtKind;
   counterpartyName: string;
   principalAmount: number;
   remainingAmount: number;
-  dueDate: string | null;
-  status: "OPEN" | "PAID";
+  dueDate?: string | null;
+  status: DebtStatus;
   createdAt: string;
-  payments: { id: string; date: string; amount: number; accountId: string | null }[];
 };
 
 type Account = { id: string; name: string };
 
-// sentinel untuk opsi “tanpa akun” (tidak boleh pakai string kosong "")
-const NONE = "__none__";
+const KIND: DebtKind[] = ["HUTANG", "PIUTANG"];
+const STATUS: DebtStatus[] = ["OPEN", "PAID"];
 
 export default function DebtsPage() {
   const [debts, setDebts] = React.useState<Debt[]>([]);
   const [accounts, setAccounts] = React.useState<Account[]>([]);
   const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState<string | null>(null);
 
   // filter
-  const [kindFilter, setKindFilter] = React.useState<"HUTANG" | "PIUTANG">("HUTANG");
-  const [statusFilter, setStatusFilter] = React.useState<"OPEN" | "PAID">("OPEN");
+  const [fKind, setFKind] = React.useState<"ALL" | DebtKind>("ALL");
+  const [fStatus, setFStatus] = React.useState<"ALL" | DebtStatus>("ALL");
 
-  // form add debt
-  const [kind, setKind] = React.useState<"HUTANG" | "PIUTANG">("HUTANG");
+  // form create
+  const today = new Date().toISOString().slice(0, 10);
+  const [kind, setKind] = React.useState<DebtKind>("HUTANG");
   const [name, setName] = React.useState("");
-  const [amount, setAmount] = React.useState("0");
+  const [principal, setPrincipal] = React.useState("0");
   const [due, setDue] = React.useState<string>("");
 
-  // inline payment form state
-  const [openPayId, setOpenPayId] = React.useState<string | null>(null);
-  const [payAmount, setPayAmount] = React.useState("0");
-  const [payDate, setPayDate] = React.useState<string>(() =>
-    new Date().toISOString().slice(0, 10)
-  );
-  const [payAccountId, setPayAccountId] = React.useState<string>("");
+  // dialog pay
+  const [openPay, setOpenPay] = React.useState(false);
+  const [active, setActive] = React.useState<Debt | null>(null);
+  const [payAmt, setPayAmt] = React.useState("0");
+  const [payDate, setPayDate] = React.useState(today);
+  const [payAccId, setPayAccId] = React.useState<string>("");
 
-  const fmt = (n: number) =>
-    new Intl.NumberFormat("id-ID", {
-      style: "currency",
-      currency: "IDR",
-      maximumFractionDigits: 0,
-    }).format(n);
+  const fmtDate = (s?: string | null) => (s ? s.slice(0, 10) : "—");
+  const daysTo = (d?: string | null) => {
+    if (!d) return null;
+    const dueDate = new Date(d);
+    const now = new Date();
+    return Math.ceil((+dueDate - +now) / 86_400_000);
+  };
+  const dueBadge = (d?: string | null) => {
+    if (!d) return <span className="text-xs text-muted-foreground">—</span>;
+    const n = daysTo(d)!;
+    const label = d.slice(0, 10);
+    if (n < 0) return <span className="text-xs text-red-600">Lewat {Math.abs(n)}h · {label}</span>;
+    if (n === 0) return <span className="text-xs text-orange-600">Hari ini · {label}</span>;
+    return <span className="text-xs text-muted-foreground">Dlm {n}h · {label}</span>;
+  };
 
   async function loadAll() {
     setLoading(true);
     try {
       const [dRes, aRes] = await Promise.all([
-        fetch(`/api/debts?kind=${kindFilter}&status=${statusFilter}`, {
-          cache: "no-store",
-        }),
-        fetch(`/api/accounts`, { cache: "no-store" }),
+        fetch("/api/debts", { cache: "no-store" }),
+        fetch("/api/accounts", { cache: "no-store" }),
       ]);
       const [d, a] = await Promise.all([dRes.json(), aRes.json()]);
       setDebts(d);
       setAccounts(a);
-    } catch {
-      setError("Gagal memuat data.");
     } finally {
       setLoading(false);
     }
@@ -85,130 +89,95 @@ export default function DebtsPage() {
 
   React.useEffect(() => {
     loadAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kindFilter, statusFilter]);
+  }, []);
 
-  async function onAdd(e: React.FormEvent) {
+  async function onCreate(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
-    const amt = Number(amount.replace(/[^\d-]/g, ""));
-    if (!name.trim()) return setError("Nama wajib diisi.");
-    if (!Number.isFinite(amt) || amt <= 0) return setError("Nominal harus > 0.");
+    const principalAmount = parseCurrencyToInt(principal);
+    if (!name.trim()) return toast.error("Nama wajib");
+    if (principalAmount <= 0) return toast.error("Jumlah harus > 0");
 
     const body: any = {
       kind,
       counterpartyName: name.trim(),
-      principalAmount: amt,
+      principalAmount,
+      dueDate: due || undefined,
     };
-    if (due) body.dueDate = due;
 
     const res = await fetch("/api/debts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    const created = await res.json();
-    if (!res.ok) return setError(created?.error ?? "Gagal menambah.");
-
-    await loadAll();
+    const j = await res.json();
+    if (!res.ok) return toast.error(j?.error ?? "Gagal membuat catatan");
+    toast.success("Catatan dibuat");
+    setDebts((p) => [j, ...p]);
     setKind("HUTANG");
     setName("");
-    setAmount("0");
+    setPrincipal("0");
     setDue("");
   }
 
-  async function onDelete(debtId: string) {
-    const ok = confirm("Hapus hutang/piutang ini? (hapus payment dulu jika ada)");
-    if (!ok) return;
-    const res = await fetch(`/api/debts/${debtId}`, { method: "DELETE" });
-    if (!res.ok) {
-      const j = await res.json();
-      alert(j?.error ?? "Gagal menghapus.");
-      return;
-    }
-    await loadAll();
+  async function onDelete(id: string) {
+    if (!confirm("Hapus catatan ini?")) return;
+    const res = await fetch(`/api/debts/${id}`, { method: "DELETE" });
+    const j = await res.json();
+    if (!res.ok) return toast.error(j?.error ?? "Gagal menghapus");
+    toast.success("Dihapus");
+    setDebts((p) => p.filter((x) => x.id !== id));
   }
 
-  async function onMarkPaid(debtId: string) {
-    const ok = confirm("Tandai sebagai LUNAS?");
-    if (!ok) return;
-    const res = await fetch(`/api/debts/${debtId}`, {
+  async function onToggleStatus(d: Debt) {
+    const newStatus: DebtStatus = d.status === "OPEN" ? "PAID" : "OPEN";
+    const res = await fetch(`/api/debts/${d.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: "PAID" }),
+      body: JSON.stringify({ status: newStatus }),
     });
-    if (!res.ok) {
-      const j = await res.json();
-      alert(j?.error ?? "Gagal update status.");
-      return;
-    }
-    await loadAll();
+    const j = await res.json();
+    if (!res.ok) return toast.error(j?.error ?? "Gagal update status");
+    toast.success("Status diperbarui");
+    setDebts((p) => p.map((x) => (x.id === d.id ? j : x)));
   }
 
-  async function onAddPayment(debt: Debt) {
-    setError(null);
-    const amt = Number(payAmount.replace(/[^\d-]/g, ""));
-    if (!Number.isFinite(amt) || amt <= 0)
-      return setError("Nominal pembayaran harus > 0.");
-    if (amt > debt.remainingAmount) return setError("Nominal melebihi sisa.");
+  function openPayDialog(d: Debt) {
+    setActive(d);
+    setPayAmt("0");
+    setPayDate(today);
+    setPayAccId(accounts[0]?.id ?? "");
+    setOpenPay(true);
+  }
 
-    const res = await fetch(`/api/debts/${debt.id}/payments`, {
+  async function submitPay(e: React.FormEvent) {
+    e.preventDefault();
+    if (!active) return;
+    const amount = parseCurrencyToInt(payAmt);
+    if (amount <= 0) return toast.error("Nominal harus > 0");
+    if (!payAccId) return toast.error("Pilih akun");
+
+    const res = await fetch(`/api/debts/${active.id}/pay`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        date: payDate,
-        amount: amt,
-        accountId: payAccountId || undefined,
-      }),
+      body: JSON.stringify({ amount, date: payDate, accountId: payAccId }),
     });
-    const created = await res.json();
-    if (!res.ok) return setError(created?.error ?? "Gagal menambah pembayaran.");
-
-    setOpenPayId(null);
-    setPayAmount("0");
-    setPayAccountId("");
-    await loadAll();
+    const j = await res.json();
+    if (!res.ok) return toast.error(j?.error ?? "Gagal mencatat pembayaran");
+    toast.success("Pembayaran dicatat");
+    setOpenPay(false);
+    setDebts((p) => p.map((x) => (x.id === active.id ? j.debt ?? x : x)));
+    // j.debt di backend idealnya mengembalikan debt terkini
   }
 
-  async function onDeletePayment(paymentId: string) {
-    const ok = confirm("Hapus pembayaran ini?");
-    if (!ok) return;
-    const res = await fetch(`/api/debts/payments/${paymentId}`, {
-      method: "DELETE",
+  // filter daftar
+  const filtered = debts
+    .filter((d) => (fKind === "ALL" ? true : d.kind === fKind))
+    .filter((d) => (fStatus === "ALL" ? true : d.status === fStatus))
+    .sort((a, b) => {
+      const da = a.dueDate ? new Date(a.dueDate).getTime() : Number.MAX_SAFE_INTEGER;
+      const db = b.dueDate ? new Date(b.dueDate).getTime() : Number.MAX_SAFE_INTEGER;
+      return da - db; // paling dekat jatuh tempo di atas
     });
-    if (!res.ok) {
-      const j = await res.json();
-      alert(j?.error ?? "Gagal menghapus pembayaran.");
-      return;
-    }
-    await loadAll();
-  }
-
-  const title =
-    kindFilter === "HUTANG"
-      ? "Hutang (saya berutang)"
-      : "Piutang (orang berutang ke saya)";
-
-  // helper tampilan due
-  const dueBadge = (d: Debt) => {
-    if (!d.dueDate) return <span className="text-xs text-muted-foreground">—</span>;
-    const due = new Date(d.dueDate);
-    const today = new Date();
-    const diff = Math.ceil((+due - +today) / (1000 * 60 * 60 * 24));
-    let cls = "text-xs";
-    let label = `Jatuh tempo ${due.toISOString().slice(0, 10)}`;
-    if (diff < 0) {
-      cls += " text-red-600";
-      label += ` (${Math.abs(diff)} hari lewat)`;
-    } else if (diff === 0) {
-      cls += " text-orange-600";
-      label += " (hari ini)";
-    } else {
-      cls += " text-muted-foreground";
-      label += ` (dlm ${diff} hari)`;
-    }
-    return <span className={cls}>{label}</span>;
-  };
 
   return (
     <SidebarProvider
@@ -222,39 +191,41 @@ export default function DebtsPage() {
       <AppSidebar variant="inset" />
       <SidebarInset>
         <SiteHeader />
+
         <div className="flex flex-1 flex-col @container/main">
           <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
-            {/* Header & Filter */}
-            <div className="px-4 lg:px-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+            <div className="px-4 lg:px-6 flex items-end justify-between gap-3">
               <div>
-                <h1 className="text-xl font-semibold">Hutang – Piutang</h1>
-                <p className="text-sm text-muted-foreground">{title}</p>
+                <h1 className="text-xl font-semibold">Hutang · Piutang</h1>
+                <p className="text-sm text-muted-foreground">Catat, bayar/terima, dan pantau sisa.</p>
               </div>
               <div className="flex gap-2">
-                <Select
-                  value={kindFilter}
-                  onValueChange={(v) => setKindFilter(v as any)}
-                >
-                  <SelectTrigger className="w-[140px]">
-                    <SelectValue placeholder="Jenis" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="HUTANG">HUTANG</SelectItem>
-                    <SelectItem value="PIUTANG">PIUTANG</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Select
-                  value={statusFilter}
-                  onValueChange={(v) => setStatusFilter(v as any)}
-                >
-                  <SelectTrigger className="w-[140px]">
-                    <SelectValue placeholder="Status" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="OPEN">OPEN</SelectItem>
-                    <SelectItem value="PAID">PAID</SelectItem>
-                  </SelectContent>
-                </Select>
+                <div className="grid gap-1">
+                  <Label>Filter Jenis</Label>
+                  <Select value={fKind} onValueChange={(v) => setFKind(v as any)}>
+                    <SelectTrigger className="min-w-[140px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ALL">ALL</SelectItem>
+                      <SelectItem value="HUTANG">HUTANG</SelectItem>
+                      <SelectItem value="PIUTANG">PIUTANG</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid gap-1">
+                  <Label>Filter Status</Label>
+                  <Select value={fStatus} onValueChange={(v) => setFStatus(v as any)}>
+                    <SelectTrigger className="min-w-[140px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ALL">ALL</SelectItem>
+                      <SelectItem value="OPEN">OPEN</SelectItem>
+                      <SelectItem value="PAID">PAID</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             </div>
 
@@ -262,49 +233,45 @@ export default function DebtsPage() {
             <div className="grid gap-4 px-4 lg:grid-cols-3 lg:px-6">
               <Card className="lg:col-span-2">
                 <CardHeader>
-                  <CardTitle>
-                    Tambah {kind === "HUTANG" ? "Hutang" : "Piutang"}
-                  </CardTitle>
+                  <CardTitle>Tambah Catatan</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <form onSubmit={onAdd} className="grid gap-4">
+                  <form onSubmit={onCreate} className="grid gap-4">
                     <div className="grid gap-2">
                       <Label>Jenis</Label>
-                      <Select value={kind} onValueChange={(v) => setKind(v as any)}>
+                      <Select value={kind} onValueChange={(v) => setKind(v as DebtKind)}>
                         <SelectTrigger>
-                          <SelectValue placeholder="Pilih jenis" />
+                          <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="HUTANG">HUTANG</SelectItem>
-                          <SelectItem value="PIUTANG">PIUTANG</SelectItem>
+                          {KIND.map((k) => (
+                            <SelectItem key={k} value={k}>
+                              {k}
+                            </SelectItem>
+                          ))}
                         </SelectContent>
                       </Select>
                     </div>
+
                     <div className="grid gap-2">
                       <Label>Nama Pihak</Label>
                       <Input
-                        placeholder="Mis. Budi / Toko XYZ"
+                        placeholder={kind === "HUTANG" ? "Ke siapa kamu berhutang?" : "Siapa yang berhutang padamu?"}
                         value={name}
                         onChange={(e) => setName(e.target.value)}
                       />
                     </div>
+
                     <div className="grid gap-2">
-                      <Label>Nominal Pokok (Rp)</Label>
-                      <Input
-                        inputMode="numeric"
-                        value={amount}
-                        onChange={(e) => setAmount(e.target.value)}
-                      />
+                      <Label>Jumlah (Rp)</Label>
+                      <InputCurrency value={principal} onValueChange={setPrincipal} />
                     </div>
+
                     <div className="grid gap-2">
                       <Label>Jatuh Tempo (opsional)</Label>
-                      <Input
-                        type="date"
-                        value={due}
-                        onChange={(e) => setDue(e.target.value)}
-                      />
+                      <Input type="date" value={due} onChange={(e) => setDue(e.target.value)} />
                     </div>
-                    {error && <p className="text-sm text-red-600">{error}</p>}
+
                     <Button type="submit">Simpan</Button>
                   </form>
                 </CardContent>
@@ -312,25 +279,13 @@ export default function DebtsPage() {
 
               <Card>
                 <CardHeader>
-                  <CardTitle>Ringkasan</CardTitle>
+                  <CardTitle>Tips</CardTitle>
                 </CardHeader>
-                <CardContent className="text-sm space-y-2">
-                  <div className="flex justify-between">
-                    <span>Total Item</span>
-                    <span className="font-medium">{debts.length}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Total Pokok</span>
-                    <span className="font-medium">
-                      {fmt(debts.reduce((s, d) => s + d.principalAmount, 0))}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Total Sisa</span>
-                    <span className="font-medium">
-                      {fmt(debts.reduce((s, d) => s + d.remainingAmount, 0))}
-                    </span>
-                  </div>
+                <CardContent className="text-sm text-muted-foreground space-y-2">
+                  <p>
+                    Pembayaran akan otomatis membuat transaksi: <b>EXPENSE</b> saat melunasi <b>HUTANG</b>, dan{" "}
+                    <b>INCOME</b> saat menerima <b>PIUTANG</b>.
+                  </p>
                 </CardContent>
               </Card>
             </div>
@@ -339,20 +294,21 @@ export default function DebtsPage() {
             <div className="px-4 lg:px-6">
               <Card>
                 <CardHeader>
-                  <CardTitle>Daftar {title}</CardTitle>
+                  <CardTitle>Daftar</CardTitle>
                 </CardHeader>
                 <CardContent>
                   {loading ? (
                     <p className="text-sm text-muted-foreground">Memuat…</p>
-                  ) : debts.length === 0 ? (
+                  ) : filtered.length === 0 ? (
                     <p className="text-sm text-muted-foreground">Belum ada data.</p>
                   ) : (
                     <div className="overflow-x-auto">
                       <table className="w-full text-sm">
                         <thead className="text-left text-muted-foreground">
                           <tr>
-                            <th className="py-2">Pihak</th>
-                            <th>Pokok</th>
+                            <th className="py-2">Jenis</th>
+                            <th>Pihak</th>
+                            <th>Jumlah Awal</th>
                             <th>Sisa</th>
                             <th>Jatuh Tempo</th>
                             <th>Status</th>
@@ -360,174 +316,28 @@ export default function DebtsPage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {debts.map((d) => (
-                            <React.Fragment key={d.id}>
-                              <tr className="border-t align-top">
-                                <td className="py-2">
-                                  <div className="font-medium">
-                                    {d.counterpartyName}
-                                  </div>
-                                  <div>{dueBadge(d)}</div>
-                                  {d.payments.length > 0 && (
-                                    <div className="text-xs text-muted-foreground mt-1">
-                                      {d.payments.length} pembayaran
-                                    </div>
-                                  )}
-                                </td>
-                                <td>{fmt(d.principalAmount)}</td>
-                                <td
-                                  className={
-                                    d.remainingAmount === 0
-                                      ? "text-green-600 font-medium"
-                                      : ""
-                                  }
-                                >
-                                  {fmt(d.remainingAmount)}
-                                </td>
-                                <td>{d.dueDate ? d.dueDate.slice(0, 10) : "—"}</td>
-                                <td>{d.status}</td>
-                                <td className="text-right space-x-2">
-                                  {d.status === "OPEN" && (
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      onClick={() => {
-                                        setOpenPayId(d.id);
-                                        setPayAmount("0");
-                                      }}
-                                    >
-                                      Tambah Bayar
-                                    </Button>
-                                  )}
-                                  {d.status === "OPEN" && (
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      onClick={() => onMarkPaid(d.id)}
-                                    >
-                                      Tandai Lunas
-                                    </Button>
-                                  )}
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => onDelete(d.id)}
-                                  >
-                                    Hapus
-                                  </Button>
-                                </td>
-                              </tr>
-
-                              {/* Row form pembayaran (expand) */}
-                              {openPayId === d.id && (
-                                <tr className="border-t bg-muted/30">
-                                  <td colSpan={6} className="p-3">
-                                    <div className="grid gap-3 md:grid-cols-5">
-                                      <div className="grid gap-1">
-                                        <Label>Nominal</Label>
-                                        <Input
-                                          inputMode="numeric"
-                                          value={payAmount}
-                                          onChange={(e) => setPayAmount(e.target.value)}
-                                        />
-                                      </div>
-                                      <div className="grid gap-1">
-                                        <Label>Tanggal</Label>
-                                        <Input
-                                          type="date"
-                                          value={payDate}
-                                          onChange={(e) => setPayDate(e.target.value)}
-                                        />
-                                      </div>
-                                      <div className="grid gap-1 md:col-span-2">
-                                        <Label>Akun (opsional)</Label>
-                                        <Select
-                                          value={payAccountId || NONE}
-                                          onValueChange={(v) =>
-                                            setPayAccountId(v === NONE ? "" : v)
-                                          }
-                                        >
-                                          <SelectTrigger>
-                                            <SelectValue placeholder="Pilih akun (opsional)" />
-                                          </SelectTrigger>
-                                          <SelectContent>
-                                            <SelectItem value={NONE}>—</SelectItem>
-                                            {accounts.map((a) => (
-                                              <SelectItem key={a.id} value={a.id}>
-                                                {a.name}
-                                              </SelectItem>
-                                            ))}
-                                          </SelectContent>
-                                        </Select>
-                                      </div>
-                                      <div className="flex items-end gap-2">
-                                        <Button
-                                          size="sm"
-                                          onClick={() => onAddPayment(d)}
-                                        >
-                                          Simpan
-                                        </Button>
-                                        <Button
-                                          size="sm"
-                                          variant="outline"
-                                          onClick={() => setOpenPayId(null)}
-                                        >
-                                          Batal
-                                        </Button>
-                                      </div>
-                                    </div>
-
-                                    {/* daftar pembayaran singkat */}
-                                    {d.payments.length > 0 && (
-                                      <div className="mt-3 overflow-x-auto">
-                                        <table className="w-full text-xs">
-                                          <thead className="text-left text-muted-foreground">
-                                            <tr>
-                                              <th className="py-1">Tanggal</th>
-                                              <th>Akun</th>
-                                              <th className="text-right">
-                                                Nominal
-                                              </th>
-                                              <th></th>
-                                            </tr>
-                                          </thead>
-                                          <tbody>
-                                            {d.payments.map((p) => (
-                                              <tr key={p.id} className="border-t">
-                                                <td className="py-1">
-                                                  {p.date.slice(0, 10)}
-                                                </td>
-                                                <td>
-                                                  {p.accountId
-                                                    ? accounts.find(
-                                                        (a) => a.id === p.accountId
-                                                      )?.name ?? p.accountId
-                                                    : "—"}
-                                                </td>
-                                                <td className="text-right">
-                                                  {fmt(p.amount)}
-                                                </td>
-                                                <td className="text-right">
-                                                  <Button
-                                                    size="sm"
-                                                    variant="outline"
-                                                    onClick={() =>
-                                                      onDeletePayment(p.id)
-                                                    }
-                                                  >
-                                                    Hapus
-                                                  </Button>
-                                                </td>
-                                              </tr>
-                                            ))}
-                                          </tbody>
-                                        </table>
-                                      </div>
-                                    )}
-                                  </td>
-                                </tr>
-                              )}
-                            </React.Fragment>
+                          {filtered.map((d) => (
+                            <tr key={d.id} className="border-t">
+                              <td className="py-2">{d.kind}</td>
+                              <td>{d.counterpartyName}</td>
+                              <td>{formatIDR(d.principalAmount)}</td>
+                              <td className={d.remainingAmount > 0 ? "text-red-600" : ""}>
+                                {formatIDR(d.remainingAmount)}
+                              </td>
+                              <td>{dueBadge(d.dueDate)}</td>
+                              <td>{d.status}</td>
+                              <td className="text-right space-x-2">
+                                <Button size="sm" onClick={() => openPayDialog(d)}>
+                                  {d.kind === "HUTANG" ? "Bayar" : "Terima"}
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={() => onToggleStatus(d)}>
+                                  {d.status === "OPEN" ? "Tandai Lunas" : "Buka Lagi"}
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={() => onDelete(d.id)}>
+                                  Hapus
+                                </Button>
+                              </td>
+                            </tr>
                           ))}
                         </tbody>
                       </table>
@@ -539,6 +349,57 @@ export default function DebtsPage() {
           </div>
         </div>
       </SidebarInset>
+
+      {/* Dialog Pembayaran */}
+      <Dialog open={openPay} onOpenChange={(v) => !loading && setOpenPay(v)}>
+        <DialogContent className="sm:max-w-[480px]">
+          <DialogHeader>
+            <DialogTitle>{active?.kind === "HUTANG" ? "Bayar Hutang" : "Terima Piutang"}</DialogTitle>
+          </DialogHeader>
+
+          {active ? (
+            <form onSubmit={submitPay} className="grid gap-4">
+              <div className="text-sm text-muted-foreground">
+                {active.counterpartyName} · Sisa {formatIDR(active.remainingAmount)} ·{" "}
+                {active.dueDate ? `Due ${fmtDate(active.dueDate)}` : "Tanpa due"}
+              </div>
+
+              <div className="grid gap-2">
+                <Label>Akun</Label>
+                <Select value={payAccId} onValueChange={setPayAccId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Pilih akun" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {accounts.map((a) => (
+                      <SelectItem key={a.id} value={a.id}>
+                        {a.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid gap-2">
+                <Label>Nominal (Rp)</Label>
+                <InputCurrency value={payAmt} onValueChange={setPayAmt} />
+              </div>
+
+              <div className="grid gap-2">
+                <Label>Tanggal</Label>
+                <Input type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)} />
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => setOpenPay(false)}>
+                  Batal
+                </Button>
+                <Button type="submit">Simpan</Button>
+              </div>
+            </form>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </SidebarProvider>
   );
 }

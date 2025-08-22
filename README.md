@@ -1,8 +1,17 @@
-# Duitnya
-Personal finance app (Next.js + Prisma + shadcn/ui)
+# Duitnya — Personal Finance
 
-## Dev
-1. copy `.env.example` -> `.env`
-2. `npm i`
-3. `npx prisma migrate dev`
-4. `npm run dev`
+Stack: Next.js App Router, shadcn/ui, Prisma, SQLite (dev)
+
+## Setup
+1. Salin `.env.example` → `.env` lalu sesuaikan.
+2. Install: `npm i`
+3. Prisma: `npx prisma migrate dev && npx prisma generate`
+4. Run: `npm run dev`
+
+## Scripts
+- `npm run dev` — jalankan dev server
+- `npx prisma studio` — UI DB
+
+## Catatan
+- Dev DB: `prisma/dev.db` (diabaikan dari git)
+- Commit `prisma/schema.prisma` & `prisma/migrations/**`
