@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 
-// PATCH /api/budgets/:id { amount }
+// PATCH /api/budgets/:id  { amount }
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   try {
     const b = await req.json();
@@ -9,12 +9,12 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     if (!Number.isFinite(amount) || amount <= 0) {
       return NextResponse.json({ error: "amount harus > 0" }, { status: 400 });
     }
-    const updated = await prisma.budget.update({
+    const upd = await prisma.budget.update({
       where: { id: params.id },
       data: { amount },
       include: { category: true },
     });
-    return NextResponse.json(updated);
+    return NextResponse.json({ ...upd, spent: 0 });
   } catch {
     return NextResponse.json({ error: "Gagal update" }, { status: 400 });
   }

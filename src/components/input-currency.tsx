@@ -2,52 +2,60 @@
 
 import * as React from "react";
 import { Input } from "@/components/ui/input";
-import { formatIDR, parseCurrencyToInt } from "@/lib/money";
+import { cn } from "@/lib/utils";
 
-export function InputCurrency({
-  value,            // string angka mentah, ex: "150000"
-  onValueChange,    // (val: string) -> void  (tetap mentah)
-  placeholder,
-  id,
-  name,
-  disabled,
-}: {
+export type InputCurrencyProps = {
   value: string;
   onValueChange: (v: string) => void;
   placeholder?: string;
   id?: string;
   name?: string;
   disabled?: boolean;
-}) {
-  const [display, setDisplay] = React.useState(value);
-  const [focused, setFocused] = React.useState(false);
+  className?: string;
+  onKeyDown?: React.KeyboardEventHandler<HTMLInputElement>;
+  autoFocus?: boolean;
+};
 
-  React.useEffect(() => {
-    if (!focused) {
-      const n = parseCurrencyToInt(value);
-      setDisplay(n ? formatIDR(n) : "");
-    } else {
-      setDisplay(value);
-    }
-  }, [value, focused]);
+/**
+ * Input angka sederhana (hanya digit). Tampilan tanpa pemisah ribuan.
+ * Gunakan parseCurrencyToInt() saat submit untuk mengubah ke number.
+ */
+export const InputCurrency = React.forwardRef<HTMLInputElement, InputCurrencyProps>(
+  (
+    {
+      value,
+      onValueChange,
+      placeholder,
+      id,
+      name,
+      disabled,
+      className,
+      onKeyDown,
+      autoFocus,
+    },
+    ref
+  ) => {
+    const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const digits = e.target.value.replace(/[^\d]/g, "");
+      onValueChange(digits || "0");
+    };
 
-  function onChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const raw = e.target.value;
-    const n = parseCurrencyToInt(raw);
-    onValueChange(String(n));
+    return (
+      <Input
+        ref={ref}
+        id={id}
+        name={name}
+        disabled={disabled}
+        value={value}
+        onChange={handleChange}
+        placeholder={placeholder ?? "0"}
+        inputMode="numeric"
+        onKeyDown={onKeyDown}
+        autoFocus={autoFocus}
+        className={cn("text-right", className)}
+      />
+    );
   }
+);
 
-  return (
-    <Input
-      id={id}
-      name={name}
-      disabled={disabled}
-      inputMode="numeric"
-      placeholder={placeholder ?? "Mis. 150000"}
-      value={display}
-      onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
-      onChange={onChange}
-    />
-  );
-}
+InputCurrency.displayName = "InputCurrency";

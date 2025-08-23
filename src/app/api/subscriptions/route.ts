@@ -1,58 +1,59 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 
-type Freq = "WEEKLY" | "MONTHLY" | "YEARLY";
+// GET /api/subscriptions?active=true&days=30
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const active = url.searchParams.get("active");
+  const days = Number(url.searchParams.get("days") ?? 0);
 
-function parseDate(d: string) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
-  return new Date(`${d}T00:00:00.000Z`);
-}
+  const where: any = {};
+  if (active === "true") where.isActive = true;
+  if (active === "false") where.isActive = false;
 
-// GET /api/subscriptions
-export async function GET() {
-  const subs = await prisma.subscription.findMany({
-    orderBy: [{ isActive: "desc" }, { nextDueDate: "asc" }],
-    include: { account: true },
+  let subs = await prisma.subscription.findMany({
+    where,
+    orderBy: [{ isActive: "desc" }, { nextDueDate: "asc" }, { createdAt: "asc" }],
   });
+
+  if (Number.isFinite(days) && days > 0) {
+    const lim = new Date();
+    lim.setDate(lim.getDate() + days);
+    subs = subs.filter((s) => new Date(s.nextDueDate) <= lim);
+  }
+
   return NextResponse.json(subs);
 }
 
 // POST /api/subscriptions
-// body: { name, amount, frequency: "WEEKLY"|"MONTHLY"|"YEARLY", nextDueDate: "YYYY-MM-DD", accountId?: string, isActive?: boolean }
+// { name, amount, frequency: WEEKLY|MONTHLY|YEARLY, nextDueDate: YYYY-MM-DD, accountId?: string, isActive?: boolean }
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const name = String(body?.name ?? "").trim();
-    const amount = Number(body?.amount);
-    const frequency = body?.frequency as Freq;
-    const nextDueDateStr = String(body?.nextDueDate ?? "");
-    const accountId = body?.accountId ? String(body.accountId) : undefined;
-    const isActive = body?.isActive ?? true;
+    const b = await req.json();
+    const name = String(b?.name ?? "").trim();
+    const amount = Math.round(Math.abs(Number(b?.amount ?? 0)));
+    const freq = String(b?.frequency ?? "").toUpperCase();
+    const nextDue = String(b?.nextDueDate ?? "");
+    const accountId = b?.accountId ? String(b.accountId) : null;
+    const isActive = b?.isActive ?? true;
 
-    if (!name) return NextResponse.json({ error: "Nama wajib diisi." }, { status: 400 });
+    if (!name) return NextResponse.json({ error: "Nama wajib diisi" }, { status: 400 });
+    if (!["WEEKLY", "MONTHLY", "YEARLY"].includes(freq))
+      return NextResponse.json({ error: "frequency tidak valid" }, { status: 400 });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(nextDue))
+      return NextResponse.json({ error: "nextDueDate harus YYYY-MM-DD" }, { status: 400 });
     if (!Number.isFinite(amount) || amount <= 0)
-      return NextResponse.json({ error: "Nominal harus angka > 0." }, { status: 400 });
-    if (!["WEEKLY", "MONTHLY", "YEARLY"].includes(frequency))
-      return NextResponse.json({ error: "Frequency tidak valid." }, { status: 400 });
-
-    const dt = parseDate(nextDueDateStr);
-    if (!dt) return NextResponse.json({ error: "nextDueDate harus YYYY-MM-DD." }, { status: 400 });
-
-    if (accountId) {
-      const acc = await prisma.account.findUnique({ where: { id: accountId } });
-      if (!acc) return NextResponse.json({ error: "Akun tidak ditemukan." }, { status: 404 });
-    }
+      return NextResponse.json({ error: "amount harus > 0" }, { status: 400 });
 
     const created = await prisma.subscription.create({
       data: {
         name,
-        amount: Math.round(amount),
-        frequency,
-        nextDueDate: dt,
-        isActive: Boolean(isActive),
+        amount,
+        frequency: freq as any,
+        nextDueDate: new Date(nextDue + "T00:00:00.000Z"),
         accountId,
+        isActive: Boolean(isActive),
       },
-      include: { account: true },
     });
 
     return NextResponse.json(created, { status: 201 });

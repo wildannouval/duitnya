@@ -13,11 +13,11 @@ import {
   IconHelp,
   IconSearch,
   IconInnerShadowTop,
+  IconFileImport,
+  IconArchive,
 } from "@tabler/icons-react";
 import { usePathname } from "next/navigation";
 
-// ⚠️ PENTING: sesuaikan path ini dengan struktur projekmu.
-// Kalau file kamu ada di "components/ui", ganti jadi "@/components/ui/nav-main" dan seterusnya.
 import { NavMain } from "@/components/nav-main";
 import { NavSecondary } from "@/components/nav-secondary";
 import { NavUser } from "@/components/nav-user";
@@ -38,19 +38,21 @@ const user = {
   avatar: "/favicon.ico",
 };
 
-// Menu utama (ISI KEDUA PROPERTI: url & href)
+// menu utama aplikasi
 const navMainBase = [
-  { title: "Dashboard",      url: "/dashboard",     href: "/dashboard",     icon: IconDashboard },
-  { title: "Akun",           url: "/accounts",      href: "/accounts",      icon: IconWallet },
-  { title: "Kategori",       url: "/categories",    href: "/categories",    icon: IconTags },
-  { title: "Transaksi",      url: "/transactions",  href: "/transactions",  icon: IconCreditCard },
-  { title: "Budget",         url: "/budget",        href: "/budget",        icon: IconChartBar },
-  { title: "Hutang–Piutang", url: "/debts",         href: "/debts",         icon: IconUserDollar },
-  { title: "Langganan",      url: "/subscriptions", href: "/subscriptions", icon: IconBell },
+  { title: "Dashboard",      url: "/dashboard",     icon: IconDashboard },
+  { title: "Akun",           url: "/accounts",      icon: IconWallet },
+  { title: "Kategori",       url: "/categories",    icon: IconTags },
+  { title: "Transaksi",      url: "/transactions",  icon: IconCreditCard },
+  { title: "Budget",         url: "/budget",        icon: IconChartBar },
+  { title: "Hutang–Piutang", url: "/debts",         icon: IconUserDollar },
+  { title: "Langganan",      url: "/subscriptions", icon: IconBell },
 ];
 
-// Menu sekunder (boleh tetap pakai "url" saja, karena memang jalan)
-const navSecondary = [
+// menu sekunder + IMPORT
+const navSecondaryBase = [
+  { title: "Import",   url: "/import",   icon: IconFileImport },
+  { title: "Backup",   url: "/backup",   icon: IconArchive },
   { title: "Settings", url: "/settings", icon: IconSettings },
   { title: "Get Help", url: "/help",     icon: IconHelp },
   { title: "Search",   url: "/search",   icon: IconSearch },
@@ -59,15 +61,25 @@ const navSecondary = [
 export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   const pathname = usePathname();
 
+  // tandai aktif bila diperlukan (opsional, aman walau NavMain/NavSecondary tak pakai isActive)
   const navMain = React.useMemo(
     () =>
       navMainBase.map((it) => ({
         ...it,
         isActive:
-          pathname === it.href ||
           pathname === it.url ||
-          (it.href && it.href !== "/" && pathname.startsWith(it.href + "/")) ||
-          (it.url  && it.url  !== "/" && pathname.startsWith(it.url  + "/")),
+          (it.url !== "/" && pathname.startsWith(it.url + "/")),
+      })),
+    [pathname]
+  );
+
+  const navSecondary = React.useMemo(
+    () =>
+      navSecondaryBase.map((it) => ({
+        ...it,
+        isActive:
+          pathname === it.url ||
+          (it.url !== "/" && pathname.startsWith(it.url + "/")),
       })),
     [pathname]
   );
@@ -88,7 +100,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
       </SidebarHeader>
 
       <SidebarContent>
-        <NavMain items={navMain as any} />
+        <NavMain items={navMain} />
         <NavSecondary items={navSecondary} className="mt-auto" />
       </SidebarContent>
 

@@ -7,89 +7,169 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { InputCurrency } from "@/components/input-currency";
-import { parseCurrencyToInt, formatIDR } from "@/lib/money";
+import { Input } from "@/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+import { InputCurrency } from "@/components/input-currency";
+import { formatIDR } from "@/lib/money";
 import { toast } from "sonner";
 
-type Account = {
+type AccountRow = {
   id: string;
   name: string;
-  type: "BANK" | "EWALLET" | "CASH";
+  type: string;
+  currency: string;
   initialBalance: number;
+  computedBalance: number;
   createdAt: string;
 };
 
-type Summary = {
-  accounts: { id: string; name: string; type: Account["type"]; initialBalance: number; balance: number }[];
-  totals: { totalBalance: number };
-  period: string; // "YYYY-MM"
-};
+type Category = { id: string; name: string; type: "INCOME" | "EXPENSE"; isBudgetable: boolean };
 
-const TYPES: Account["type"][] = ["BANK", "EWALLET", "CASH"];
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate()
+  ).padStart(2, "0")}`;
+}
 
 export default function AccountsPage() {
-  const now = new Date();
-  const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-
-  const [list, setList] = React.useState<Account[]>([]);
-  const [summary, setSummary] = React.useState<Summary | null>(null);
+  const [rows, setRows] = React.useState<AccountRow[]>([]);
+  const [categories, setCategories] = React.useState<Category[]>([]);
   const [loading, setLoading] = React.useState(true);
 
-  // form
-  const [name, setName] = React.useState("");
-  const [type, setType] = React.useState<Account["type"]>("BANK");
-  const [initial, setInitial] = React.useState("0");
+  // ====== Form Tambah Akun ======
+  const [accName, setAccName] = React.useState("");
+  const [accType, setAccType] = React.useState<"BANK" | "EWALLET" | "CASH">("BANK");
+  const [accCurrency, setAccCurrency] = React.useState("IDR");
+  const [accInitial, setAccInitial] = React.useState("0");
+  const [creating, setCreating] = React.useState(false);
 
-  const balanceMap = new Map(summary?.accounts.map((a) => [a.id, a.balance]) ?? []);
+  // ====== Reconcile per-akun ======
+  type RecState = {
+    actual: string; // digits
+    date: string;   // YYYY-MM-DD
+    categoryId: string | null; // null = tanpa kategori
+    note: string;
+  };
+  const [rec, setRec] = React.useState<Record<string, RecState>>({});
 
-  async function loadAll() {
+  const expenseCats = React.useMemo(
+    () => categories.filter((c) => c.type === "EXPENSE"),
+    [categories]
+  );
+  const incomeCats = React.useMemo(
+    () => categories.filter((c) => c.type === "INCOME"),
+    [categories]
+  );
+
+  async function load() {
     setLoading(true);
     try {
-      const [aRes, sRes] = await Promise.all([
-        fetch("/api/accounts", { cache: "no-store" }),
-        fetch(`/api/summary?month=${thisMonth}`, { cache: "no-store" }),
+      const [bRes, cRes] = await Promise.all([
+        fetch("/api/accounts/balances", { cache: "no-store" }),
+        fetch("/api/categories", { cache: "no-store" }),
       ]);
-      const [a, s] = await Promise.all([aRes.json(), sRes.json()]);
-      setList(a);
-      setSummary(s);
+      const [b, c] = await Promise.all([bRes.json(), cRes.json()]);
+      setRows(b ?? []);
+      setCategories(c ?? []);
+
+      // init state rec
+      setRec((prev) => {
+        const next: Record<string, RecState> = { ...prev };
+        (b as AccountRow[]).forEach((r) => {
+          if (!next[r.id]) {
+            next[r.id] = {
+              actual: String(Math.max(0, r.computedBalance)),
+              date: todayStr(),
+              categoryId: null,
+              note: "",
+            };
+          }
+        });
+        return next;
+      });
     } finally {
       setLoading(false);
     }
   }
 
   React.useEffect(() => {
-    loadAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    load();
   }, []);
 
-  async function onCreate(e: React.FormEvent) {
-    e.preventDefault();
-    const initialBalance = parseCurrencyToInt(initial);
-    if (!name.trim()) return toast.error("Nama akun wajib diisi");
-    if (!Number.isFinite(initialBalance)) return toast.error("Saldo awal tidak valid");
-
-    const res = await fetch("/api/accounts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name.trim(), type, initialBalance }),
-    });
-    const j = await res.json();
-    if (!res.ok) return toast.error(j?.error ?? "Gagal menambah akun");
-    toast.success("Akun ditambahkan");
-    setName("");
-    setType("BANK");
-    setInitial("0");
-    loadAll();
+  function setRecState(id: string, update: (s: RecState) => RecState) {
+    setRec((prev) => ({
+      ...prev,
+      [id]:
+        update(
+          prev[id] ?? { actual: "0", date: todayStr(), categoryId: null, note: "" }
+        ),
+    }));
   }
 
-  async function onDelete(id: string) {
-    if (!confirm("Hapus akun ini? (Pastikan tidak ada transaksi penting)")) return;
-    const res = await fetch(`/api/accounts/${id}`, { method: "DELETE" });
+  async function doReconcile(row: AccountRow) {
+    const st = rec[row.id] ?? { actual: "0", date: todayStr(), categoryId: null, note: "" };
+    const actual = Math.round(Number(st.actual || "0"));
+    if (!Number.isFinite(actual)) return toast.error("Saldo riil tidak valid");
+
+    const res = await fetch("/api/accounts/reconcile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        accountId: row.id,
+        actualBalance: actual,
+        date: st.date,
+        categoryId: st.categoryId ?? undefined,
+        note: st.note || undefined,
+      }),
+    });
     const j = await res.json();
-    if (!res.ok) return toast.error(j?.error ?? "Gagal menghapus");
-    toast.success("Akun dihapus");
-    loadAll();
+    if (!res.ok) return toast.error(j?.error ?? "Gagal reconcile");
+
+    if (j.delta === 0) {
+      toast.info("Saldo sudah sesuai, tidak ada penyesuaian.");
+    } else {
+      toast.success(
+        `Reconcile berhasil (delta: ${j.delta > 0 ? "+" : ""}${formatIDR(Math.abs(j.delta))})`
+      );
+      load();
+    }
+  }
+
+  async function createAccount(e: React.FormEvent) {
+    e.preventDefault();
+    const name = accName.trim();
+    const initial = Math.round(Number(accInitial || "0"));
+    if (!name) return toast.error("Nama akun wajib diisi");
+    if (!Number.isFinite(initial)) return toast.error("Initial balance tidak valid");
+
+    setCreating(true);
+    try {
+      const res = await fetch("/api/accounts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          type: accType,
+          currency: accCurrency || "IDR",
+          initialBalance: initial,
+        }),
+      });
+      const j = await res.json();
+      if (!res.ok) return toast.error(j?.error ?? "Gagal menambah akun");
+      toast.success("Akun ditambahkan");
+
+      // reset form
+      setAccName("");
+      setAccType("BANK");
+      setAccCurrency("IDR");
+      setAccInitial("0");
+
+      // refresh balances
+      await load();
+    } finally {
+      setCreating(false);
+    }
   }
 
   return (
@@ -107,82 +187,73 @@ export default function AccountsPage() {
 
         <div className="flex flex-1 flex-col @container/main">
           <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
+
             <div className="px-4 lg:px-6">
               <h1 className="text-xl font-semibold">Akun</h1>
-              <p className="text-sm text-muted-foreground">Kelola rekening bank, e-wallet, dan uang tunai.</p>
+              <p className="text-sm text-muted-foreground">
+                Tambah akun baru dan cocokan saldo (reconcile) dengan saldo riil.
+              </p>
             </div>
 
-            <div className="grid gap-4 px-4 lg:grid-cols-3 lg:px-6">
-              <Card className="lg:col-span-2">
-                <CardHeader>
-                  <CardTitle>Tambah Akun</CardTitle>
-                </CardHeader>
+            {/* ===== Form Tambah Akun ===== */}
+            <div className="px-4 lg:px-6">
+              <Card>
+                <CardHeader><CardTitle>Tambah Akun</CardTitle></CardHeader>
                 <CardContent>
-                  <form onSubmit={onCreate} className="grid gap-4">
-                    <div className="grid gap-2">
-                      <Label>Nama</Label>
-                      <input
-                        className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm outline-hidden ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                        placeholder="BCA, OVO, Dompet"
-                        value={name}
-                        onChange={(e) => setName(e.target.value)}
+                  <form className="grid gap-4 md:grid-cols-4" onSubmit={createAccount}>
+                    <div className="grid gap-1 md:col-span-2">
+                      <Label>Nama Akun</Label>
+                      <Input
+                        value={accName}
+                        onChange={(e) => setAccName(e.target.value)}
+                        placeholder="BCA, Dana, Dompet, dll."
                       />
                     </div>
 
-                    <div className="grid gap-2">
-                      <Label>Jenis</Label>
-                      <Select value={type} onValueChange={(v) => setType(v as Account["type"])}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Pilih jenis" />
-                        </SelectTrigger>
+                    <div className="grid gap-1">
+                      <Label>Tipe</Label>
+                      <Select value={accType} onValueChange={(v) => setAccType(v as any)}>
+                        <SelectTrigger><SelectValue placeholder="Pilih tipe" /></SelectTrigger>
                         <SelectContent>
-                          {TYPES.map((t) => (
-                            <SelectItem key={t} value={t}>
-                              {t}
-                            </SelectItem>
-                          ))}
+                          <SelectItem value="BANK">BANK</SelectItem>
+                          <SelectItem value="EWALLET">EWALLET</SelectItem>
+                          <SelectItem value="CASH">CASH</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
 
-                    <div className="grid gap-2">
-                      <Label>Saldo Awal (Rp)</Label>
-                      <InputCurrency value={initial} onValueChange={setInitial} />
+                    <div className="grid gap-1">
+                      <Label>Mata Uang</Label>
+                      <Input
+                        value={accCurrency}
+                        onChange={(e) => setAccCurrency(e.target.value.toUpperCase())}
+                        placeholder="IDR"
+                      />
                     </div>
 
-                    <Button type="submit">Simpan</Button>
-                  </form>
-                </CardContent>
-              </Card>
+                    <div className="grid gap-1">
+                      <Label>Saldo Awal (Rp)</Label>
+                      <InputCurrency value={accInitial} onValueChange={setAccInitial} />
+                    </div>
 
-              <Card>
-                <CardHeader>
-                  <CardTitle>Ringkasan</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span>Jumlah Akun</span>
-                    <span className="font-medium">{list.length}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Total Saldo</span>
-                    <span className="font-medium">
-                      {summary ? formatIDR(summary.totals.totalBalance) : "…"}
-                    </span>
-                  </div>
+                    <div className="md:col-span-4">
+                      <Button type="submit" disabled={creating}>
+                        {creating ? "Menyimpan…" : "Simpan"}
+                      </Button>
+                    </div>
+                  </form>
                 </CardContent>
               </Card>
             </div>
 
+            {/* ===== Tabel Reconcile ===== */}
             <div className="px-4 lg:px-6">
               <Card>
-                <CardHeader>
-                  <CardTitle>Daftar Akun</CardTitle>
-                </CardHeader>
+                <CardHeader><CardTitle>Daftar Akun & Reconcile</CardTitle></CardHeader>
                 <CardContent>
                   {loading ? (
                     <p className="text-sm text-muted-foreground">Memuat…</p>
-                  ) : list.length === 0 ? (
+                  ) : rows.length === 0 ? (
                     <p className="text-sm text-muted-foreground">Belum ada akun.</p>
                   ) : (
                     <div className="overflow-x-auto">
@@ -191,27 +262,94 @@ export default function AccountsPage() {
                           <tr>
                             <th className="py-2">Nama</th>
                             <th>Jenis</th>
-                            <th className="text-right">Saldo Awal</th>
-                            <th className="text-right">Saldo Saat Ini</th>
+                            <th className="text-right">Initial</th>
+                            <th className="text-right">Terhitung</th>
+                            <th className="text-right">Selisih</th>
+                            <th className="text-right">Saldo Riil</th>
+                            <th>Tanggal</th>
+                            <th>Kategori (opsional)</th>
+                            <th>Catatan</th>
                             <th className="text-right">Aksi</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {list.map((a) => (
-                            <tr key={a.id} className="border-t">
-                              <td className="py-2">{a.name}</td>
-                              <td>{a.type}</td>
-                              <td className="text-right">{formatIDR(a.initialBalance)}</td>
-                              <td className="text-right font-medium">
-                                {balanceMap.has(a.id) ? formatIDR(balanceMap.get(a.id)!) : "—"}
-                              </td>
-                              <td className="text-right">
-                                <Button size="sm" variant="outline" onClick={() => onDelete(a.id)}>
-                                  Hapus
-                                </Button>
-                              </td>
-                            </tr>
-                          ))}
+                          {rows.map((r) => {
+                            const st = rec[r.id] ?? { actual: "0", date: todayStr(), categoryId: null, note: "" };
+                            const diff = (Number(st.actual || "0") || 0) - r.computedBalance;
+                            const catList = diff < 0 ? expenseCats : incomeCats;
+
+                            return (
+                              <tr key={r.id} className="border-t align-top">
+                                <td className="py-2">
+                                  <div className="font-medium">{r.name}</div>
+                                  <div className="text-xs text-muted-foreground">{r.currency}</div>
+                                </td>
+                                <td>{r.type}</td>
+                                <td className="text-right">{formatIDR(r.initialBalance)}</td>
+                                <td className="text-right font-medium">{formatIDR(r.computedBalance)}</td>
+                                <td className={`text-right ${diff < 0 ? "text-red-600" : diff > 0 ? "text-green-700" : ""}`}>
+                                  {diff === 0 ? "—" : (diff > 0 ? "+" : "-") + formatIDR(Math.abs(diff))}
+                                </td>
+                                <td className="text-right">
+                                  <InputCurrency
+                                    value={st.actual}
+                                    onValueChange={(v) =>
+                                      setRecState(r.id, (p) => ({ ...p, actual: v }))
+                                    }
+                                    className="h-8 w-[140px]"
+                                  />
+                                </td>
+                                <td>
+                                  <Input
+                                    type="date"
+                                    value={st.date}
+                                    onChange={(e) =>
+                                      setRecState(r.id, (p) => ({ ...p, date: e.target.value }))
+                                    }
+                                    className="h-8"
+                                  />
+                                </td>
+                                <td>
+                                  <Select
+                                    value={st.categoryId ?? "__NONE__"}
+                                    onValueChange={(v) =>
+                                      setRecState(r.id, (p) => ({
+                                        ...p,
+                                        categoryId: v === "__NONE__" ? null : v,
+                                      }))
+                                    }
+                                  >
+                                    <SelectTrigger className="h-8 w-[200px]">
+                                      <SelectValue placeholder="(Tanpa kategori)" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="__NONE__">(Tanpa kategori)</SelectItem>
+                                      {catList.map((c) => (
+                                        <SelectItem key={c.id} value={c.id}>
+                                          {c.name}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </td>
+                                <td>
+                                  <Input
+                                    value={st.note}
+                                    onChange={(e) =>
+                                      setRecState(r.id, (p) => ({ ...p, note: e.target.value }))
+                                    }
+                                    placeholder="Reconcile saldo"
+                                    className="h-8 w-[200px]"
+                                  />
+                                </td>
+                                <td className="text-right">
+                                  <Button size="sm" onClick={() => doReconcile(r)}>
+                                    Reconcile
+                                  </Button>
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -219,6 +357,7 @@ export default function AccountsPage() {
                 </CardContent>
               </Card>
             </div>
+
           </div>
         </div>
       </SidebarInset>
