@@ -3,9 +3,10 @@ import { prisma } from "@/lib/db";
 
 // PATCH /api/subscriptions/:id
 // { name?, amount?, frequency?, nextDueDate?, accountId?, isActive? }
-export async function PATCH(req: Request, { params }: { params: { id: string } }) {
+export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const id = String(params.id);
+    const { id } = await params;
+    const idStr = String(id);
     const b = await req.json();
 
     const data: any = {};
@@ -26,7 +27,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     if (b.accountId !== undefined) data.accountId = b.accountId ? String(b.accountId) : null;
     if (b.isActive !== undefined) data.isActive = Boolean(b.isActive);
 
-    const updated = await prisma.subscription.update({ where: { id }, data });
+    const updated = await prisma.subscription.update({ where: { id: idStr }, data });
     return NextResponse.json(updated);
   } catch {
     return NextResponse.json({ error: "Bad request" }, { status: 400 });
@@ -34,10 +35,11 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 }
 
 // DELETE /api/subscriptions/:id
-export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
+export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const id = String(params.id);
-    await prisma.subscription.delete({ where: { id } });
+    const { id } = await params;
+    const idStr = String(id);
+    await prisma.subscription.delete({ where: { id: idStr } });
     return NextResponse.json({ ok: true });
   } catch {
     return NextResponse.json({ error: "Bad request" }, { status: 400 });

@@ -4,9 +4,10 @@ import { prisma } from "@/lib/db";
 // POST /api/debts/:id/payments
 // Body:
 // { amount: number, date?: string(YYYY-MM-DD), accountId?: string, categoryId?: string, note?: string, createTransaction?: boolean }
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const debtId = String(params.id);
+    const { id } = await params;
+    const debtId = String(id);
     const body = await req.json();
 
     const amountRaw = Number(body?.amount ?? 0);

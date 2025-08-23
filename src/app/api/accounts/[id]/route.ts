@@ -2,9 +2,10 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 
 // DELETE akun
-export async function DELETE(_: Request, { params }: { params: { id: string } }) {
+export async function DELETE(_: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    await prisma.account.delete({ where: { id: params.id } });
+    const { id } = await params;
+    await prisma.account.delete({ where: { id } });
     return NextResponse.json({ ok: true });
   } catch {
     return NextResponse.json({ error: "Gagal menghapus (mungkin masih direferensikan transaksi)." }, { status: 400 });

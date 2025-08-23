@@ -2,15 +2,16 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 
 // PATCH /api/budgets/:id  { amount }
-export async function PATCH(req: Request, { params }: { params: { id: string } }) {
+export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const { id } = await params;
     const b = await req.json();
     const amount = Math.round(Number(b?.amount ?? 0));
     if (!Number.isFinite(amount) || amount <= 0) {
       return NextResponse.json({ error: "amount harus > 0" }, { status: 400 });
     }
     const upd = await prisma.budget.update({
-      where: { id: params.id },
+      where: { id },
       data: { amount },
       include: { category: true },
     });
@@ -21,9 +22,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 }
 
 // DELETE /api/budgets/:id
-export async function DELETE(_: Request, { params }: { params: { id: string } }) {
+export async function DELETE(_: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    await prisma.budget.delete({ where: { id: params.id } });
+    const { id } = await params;
+    await prisma.budget.delete({ where: { id } });
     return NextResponse.json({ ok: true });
   } catch {
     return NextResponse.json({ error: "Gagal menghapus" }, { status: 400 });

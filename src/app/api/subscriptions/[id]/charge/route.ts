@@ -12,8 +12,9 @@ function advance(date: Date, freq: Freq) {
 }
 
 // POST /api/subscriptions/:id/charge  { amount, date, accountId? }
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const { id } = await params;
     const b = await req.json();
     const amount = Math.round(Number(b?.amount ?? 0));
     const dateStr = String(b?.date ?? "");
@@ -25,7 +26,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       return NextResponse.json({ error: "format tanggal harus YYYY-MM-DD" }, { status: 400 });
     }
 
-    const sub = await prisma.subscription.findUnique({ where: { id: params.id } });
+    const sub = await prisma.subscription.findUnique({ where: { id } });
     if (!sub) return NextResponse.json({ error: "Subscription tidak ditemukan" }, { status: 404 });
 
     const accountId = b?.accountId ? String(b.accountId) : sub.accountId ?? "";

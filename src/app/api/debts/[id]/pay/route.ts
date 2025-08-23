@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 
 // POST /api/debts/:id/pay  { amount, date, accountId }
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const { id } = await params;
     const b = await req.json();
     const amount = Math.round(Number(b?.amount ?? 0));
     const dateStr = String(b?.date ?? "");
@@ -19,7 +20,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       return NextResponse.json({ error: "accountId wajib" }, { status: 400 });
     }
 
-    const debt = await prisma.debt.findUnique({ where: { id: params.id } });
+    const debt = await prisma.debt.findUnique({ where: { id } });
     if (!debt) return NextResponse.json({ error: "Debt tidak ditemukan" }, { status: 404 });
 
     // buat transaksi (EXPENSE untuk HUTANG; INCOME untuk PIUTANG)

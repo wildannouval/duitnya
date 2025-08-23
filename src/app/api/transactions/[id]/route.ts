@@ -2,9 +2,10 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 
 // DELETE /api/transactions/:id
-export async function DELETE(_: Request, { params }: { params: { id: string } }) {
+export async function DELETE(_: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const tx = await prisma.transaction.findUnique({ where: { id: params.id } });
+    const { id } = await params;
+    const tx = await prisma.transaction.findUnique({ where: { id } });
     if (!tx) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
     if (tx.type === "TRANSFER" && tx.transferGroupId) {

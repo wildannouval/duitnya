@@ -18,12 +18,13 @@ function advanceDue(dt: Date, freq: "WEEKLY" | "MONTHLY" | "YEARLY") {
 
 // POST /api/subscriptions/:id/pay
 // body: { date?: YYYY-MM-DD, accountId?: string, categoryId?: string, note?: string }
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const id = String(params.id);
+    const { id } = await params;
+    const idStr = String(id);
     const b = await req.json();
 
-    const sub = await prisma.subscription.findUnique({ where: { id } });
+    const sub = await prisma.subscription.findUnique({ where: { id: idStr } });
     if (!sub) return NextResponse.json({ error: "Subscription tidak ditemukan" }, { status: 404 });
     if (!sub.isActive)
       return NextResponse.json({ error: "Subscription tidak aktif" }, { status: 400 });
@@ -62,7 +63,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
 
       // majukan due date
       const updatedSub = await tx.subscription.update({
-        where: { id },
+        where: { id: idStr },
         data: { nextDueDate: nextDue },
       });
 
